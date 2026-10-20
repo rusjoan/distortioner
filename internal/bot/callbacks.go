@@ -19,6 +19,7 @@ import (
 //
 //	c:<pool>:<job id>      cancel a job
 //	r:<strength>           distort the message with the button again
+//	f                      deep-fry the message with the button again
 //	s:str:<n> | s:audio | s:lang:<code>   chat settings
 //	a:…                    admin panel
 func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
@@ -32,7 +33,7 @@ func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
 		}
 	case strings.HasPrefix(data, "c:"):
 		b.onCancel(ctx, cq)
-	case strings.HasPrefix(data, "r:"):
+	case strings.HasPrefix(data, "r:"), data == "f":
 		b.onMore(ctx, cq)
 	case strings.HasPrefix(data, "s:"):
 		b.onSettings(ctx, cq)
@@ -80,7 +81,9 @@ func (b *Bot) onMore(ctx context.Context, cq *models.CallbackQuery) {
 		return
 	}
 	r := b.newRequest(ctx, msg, &cq.From, msg.ID)
-	if n, err := strconv.Atoi(strings.TrimPrefix(cq.Data, "r:")); err == nil &&
+	if cq.Data == "f" {
+		r.effect = EffectFry
+	} else if n, err := strconv.Atoi(strings.TrimPrefix(cq.Data, "r:")); err == nil &&
 		n >= settings.MinStrength && n <= settings.MaxStrength {
 		r.strength = media.Strength(n)
 	}

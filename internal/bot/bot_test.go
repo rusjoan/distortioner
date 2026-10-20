@@ -292,3 +292,38 @@ func TestFileLimitFromAdminPanel(t *testing.T) {
 		t.Fatalf("%q", c.params["text"])
 	}
 }
+
+func TestFryNeedsMediaNotText(t *testing.T) {
+	h := newHarness(t)
+	original := &models.Message{ID: 7, Chat: group(-5), Text: "abc"}
+	h.send(&models.Message{From: user(1, "en"), Chat: group(-5), Text: "/fry", ReplyToMessage: original})
+	c := h.api.waitFor("sendMessage", nil)
+	if !strings.Contains(c.params["text"], "Text can't be fried") {
+		t.Fatalf("%q", c.params["text"])
+	}
+}
+
+func TestFryWithoutReplyExplains(t *testing.T) {
+	h := newHarness(t)
+	h.send(&models.Message{From: user(1, "ru"), Chat: private(1), Text: "/fry"})
+	c := h.api.waitFor("sendMessage", nil)
+	if !strings.Contains(c.params["text"], "/fry") || !strings.Contains(c.params["text"], "в подписи") {
+		t.Fatalf("%q", c.params["text"])
+	}
+}
+
+func TestCaptionCommandForAnotherBotIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	h.send(&models.Message{From: user(1, "en"), Chat: private(1), Caption: "/fry@other_bot",
+		Photo: []models.PhotoSize{{FileID: "p"}}})
+	time.Sleep(50 * time.Millisecond)
+	if calls := h.api.methods(); len(calls) != 0 {
+		t.Fatalf("unexpected calls %v", calls)
+	}
+}
+
+func TestEffectLabel(t *testing.T) {
+	if EffectFry.label(KindVideo) != "fry_video" || EffectDistort.label(KindVideo) != "video" {
+		t.Fatal("labels")
+	}
+}

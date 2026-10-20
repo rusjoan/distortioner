@@ -25,6 +25,22 @@ const (
 	KindAlbum        Kind = "album"
 )
 
+// Effect is what is done to the media.
+type Effect int
+
+const (
+	EffectDistort Effect = iota // seam carving, the default
+	EffectFry                   // deep fry, shake and earrape
+)
+
+// label prefixes the media kind in statistics: "video", "fry_video".
+func (e Effect) label(k Kind) string {
+	if e == EffectFry {
+		return "fry_" + string(k)
+	}
+	return string(k)
+}
+
 // heavy kinds go through the video pool and get a progress message.
 func (k Kind) heavy() bool {
 	switch k {
@@ -46,6 +62,14 @@ type item struct {
 // classify finds the media in a message. unsupported is set for media we
 // recognise but cannot process (animated Lottie stickers).
 func classify(m *models.Message) (it item, ok, unsupported bool) {
+	it, ok, unsupported = classifyMedia(m)
+	if strings.HasPrefix(it.caption, "/") {
+		it.caption = "" // the caption was a command such as /fry, not text to keep
+	}
+	return it, ok, unsupported
+}
+
+func classifyMedia(m *models.Message) (it item, ok, unsupported bool) {
 	it.caption = m.Caption
 	switch {
 	case len(m.Photo) > 0:

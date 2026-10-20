@@ -148,3 +148,35 @@ func TestE2EVoiceMessagesForbidden(t *testing.T) {
 		t.Fatalf("unexpected messages: %v", h.api.find("sendMessage"))
 	}
 }
+
+func TestE2EFryReplyToVideo(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("vid", render(t, "v.mp4",
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=2",
+		"-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-c:a", "aac", "-shortest"))
+	original := &models.Message{ID: 70, Chat: group(-5), Video: &models.Video{FileID: "vid"}}
+	h.send(&models.Message{From: user(1, "en"), Chat: group(-5), Text: "/fry@distortioner_bot", ReplyToMessage: original})
+	c := h.api.waitFor("sendVideo", nil)
+	if len(c.files["video"]) == 0 || !strings.Contains(c.params["reply_markup"], `"callback_data":"f"`) {
+		t.Fatalf("%+v", c.params)
+	}
+	if n := len(h.api.find("sendMessage")); n != 0 { // frying gets no progress message
+		t.Fatalf("unexpected progress messages: %d", n)
+	}
+}
+
+func TestE2EFryCaptionAndMoreButton(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("photo", render(t, "p.jpg", "-f", "lavfi", "-i", "testsrc=size=640x480", "-frames:v", "1"))
+	h.send(&models.Message{From: user(1, "en"), Chat: private(1), Caption: "/fry", Photo: []models.PhotoSize{{FileID: "photo"}}})
+	c := h.api.waitFor("sendPhoto", nil)
+	if len(c.files["photo"]) == 0 || c.params["caption"] != "" {
+		t.Fatalf("%+v", c.params)
+	}
+
+	h.api.addFile("st", render(t, "s.webp", "-f", "lavfi", "-i", "testsrc=size=512x512", "-frames:v", "1"))
+	h.press(*user(1, "en"), &models.Message{ID: 80, Chat: private(1), Sticker: &models.Sticker{FileID: "st"}}, "f")
+	if c := h.api.waitFor("sendSticker", nil); !strings.Contains(c.params["reply_markup"], `"callback_data":"f"`) {
+		t.Fatalf("%+v", c.params)
+	}
+}

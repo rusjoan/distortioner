@@ -63,7 +63,8 @@ var messages = map[Lang]map[string]string{
 		"help": "<b>What I can distort</b>\nphotos, stickers (static and video), GIFs, videos, video notes, voice messages, " +
 			"audio files, pictures and videos sent as files, albums and text.\n\n" +
 			"<b>Groups</b>: reply with /distort to the message. Strength from %d to %d: <code>/distort 70</code>.\n" +
-			"Under each result there is a <b>🔁 More</b> button: it distorts the result once again.\n\n" +
+			"Under each result there is a <b>🔁 More</b> button: it distorts the result once again.\n" +
+			"<b>/fry</b> deep-fries instead: burnt colours, a shaking frame and earrape sound.\n\n" +
 			"Limits: up to %d MB, videos up to %d s.",
 
 		"progress.downloading": "⏬ Downloading…",
@@ -84,19 +85,21 @@ var messages = map[Lang]map[string]string{
 		"err.no_rights":     "I don't have the rights to send media in this chat.",
 		"err.canceled":      "❌ Canceled.",
 		"err.shutdown":      "🔄 The bot is restarting. Please send it again in a minute.",
-		"err.reply_needed":  "Reply with /distort to the message you want distorted.",
+		"err.reply_needed":  "Reply with /%s to the message you want processed, or send the media with /%[1]s as its caption.",
 		"err.reply_group":   "\nIf the group is private, the bot may also need chat history to be visible to new members.",
 		"err.nothing":       "There is nothing I can distort in that message.",
 		"err.no_video":      "There is no video in this file.",
 		"err.strength":      "Strength must be between %d and %d.",
 		"err.admins_only":   "Only chat admins can change settings here.",
 		"err.not_yours":     "Only the person who sent it can cancel this.",
+		"err.fry_text":      "Text can't be fried. Send a picture, a video or a voice message.",
 
 		"dur.sec": "%d s",
 		"dur.min": "%d min %d s",
 
-		"btn.more":   "🔁 More",
-		"btn.cancel": "❌ Cancel",
+		"btn.more":     "🔁 More",
+		"btn.fry_more": "🔥 More",
+		"btn.cancel":   "❌ Cancel",
 
 		"settings.title":    "<b>Settings for this chat</b>\nStrength: <b>%d%%</b>\nDistort sound in videos: <b>%s</b>\nLanguage: %s",
 		"settings.strength": "Strength",
@@ -176,7 +179,8 @@ var messages = map[Lang]map[string]string{
 		"help": "<b>Что я умею искажать</b>\nфото, стикеры (обычные и видео), гифки, видео, кружки, голосовые, " +
 			"аудиофайлы, картинки и видео файлом, альбомы и текст.\n\n" +
 			"<b>Группы</b>: ответь командой /distort на сообщение. Сила от %d до %d: <code>/distort 70</code>.\n" +
-			"Под каждым результатом есть кнопка <b>🔁 Ещё</b> — она искажает результат повторно.\n\n" +
+			"Под каждым результатом есть кнопка <b>🔁 Ещё</b> — она искажает результат повторно.\n" +
+			"<b>/fry</b> — прожарка: выжженные цвета, тряска и earrape на звук.\n\n" +
 			"Лимиты: до %d МБ, видео до %d с.",
 
 		"progress.downloading": "⏬ Скачиваю…",
@@ -197,19 +201,21 @@ var messages = map[Lang]map[string]string{
 		"err.no_rights":     "У меня нет прав отправлять медиа в этот чат.",
 		"err.canceled":      "❌ Отменено.",
 		"err.shutdown":      "🔄 Бот перезапускается. Пришли это ещё раз через минуту.",
-		"err.reply_needed":  "Ответь командой /distort на сообщение, которое нужно исказить.",
+		"err.reply_needed":  "Ответь командой /%s на сообщение, которое нужно обработать, или пришли медиа с /%[1]s в подписи.",
 		"err.reply_group":   "\nЕсли группа закрытая, может понадобиться открыть историю чата для новых участников.",
 		"err.nothing":       "В этом сообщении нечего искажать.",
 		"err.no_video":      "В этом файле нет видео.",
 		"err.strength":      "Сила должна быть от %d до %d.",
 		"err.admins_only":   "Менять настройки здесь могут только админы чата.",
 		"err.not_yours":     "Отменить может только тот, кто это прислал.",
+		"err.fry_text":      "Текст не прожарить. Пришли картинку, видео или голосовое.",
 
 		"dur.sec": "%d с",
 		"dur.min": "%d мин %d с",
 
-		"btn.more":   "🔁 Ещё",
-		"btn.cancel": "❌ Отмена",
+		"btn.more":     "🔁 Ещё",
+		"btn.fry_more": "🔥 Ещё",
+		"btn.cancel":   "❌ Отмена",
 
 		"settings.title":    "<b>Настройки этого чата</b>\nСила: <b>%d%%</b>\nИскажать звук в видео: <b>%s</b>\nЯзык: %s",
 		"settings.strength": "Сила",

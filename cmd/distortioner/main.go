@@ -239,6 +239,7 @@ func setCommands(ctx context.Context, tb *tgbot.Bot, cfg *config.Config, log *sl
 	type cmd struct{ name, en, ru string }
 	public := []cmd{
 		{"distort", "Distort the message you reply to", "Исказить сообщение, на которое отвечаешь"},
+		{"fry", "Deep fry: burnt colours, shaking, earrape", "Прожарка: выжженные цвета, тряска, earrape"},
 		{"settings", "Strength, sound and language", "Сила, звук и язык"},
 		{"help", "What the bot can do", "Что умеет бот"},
 	}

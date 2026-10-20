@@ -40,7 +40,8 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 
 	heavy := false
 	for _, it := range items {
-		heavy = heavy || it.kind.heavy()
+		// Frying is a single cheap ffmpeg pass: it never waits behind seam carving.
+		heavy = heavy || (r.effect == EffectDistort && it.kind.heavy())
 	}
 	pool, poolName := b.Image, "i"
 	if heavy {
@@ -107,10 +108,13 @@ func cancelMarkup(lang i18n.Lang, pool string, id uint64) models.ReplyMarkup {
 	}}}
 }
 
-func moreMarkup(lang i18n.Lang, strength media.Strength) models.ReplyMarkup {
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
-		{Text: i18n.T(lang, "btn.more"), CallbackData: "r:" + strconv.Itoa(int(strength))},
-	}}}
+// moreMarkup is the button under a result that applies the same effect again.
+func moreMarkup(lang i18n.Lang, effect Effect, strength media.Strength) models.ReplyMarkup {
+	button := models.InlineKeyboardButton{Text: i18n.T(lang, "btn.more"), CallbackData: "r:" + strconv.Itoa(int(strength))}
+	if effect == EffectFry {
+		button = models.InlineKeyboardButton{Text: i18n.T(lang, "btn.fry_more"), CallbackData: "f"}
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{button}}}
 }
 
 // run downloads, distorts and sends the result. It runs on a pool worker.
@@ -151,6 +155,9 @@ func (b *Bot) run(ctx context.Context, t *task, poolName string, id uint64) erro
 
 func (b *Bot) distort(ctx context.Context, t *task, it item, in string, i int, markup models.ReplyMarkup) (string, error) {
 	base := filepath.Join(t.workDir, fmt.Sprintf("out%d", i))
+	if t.r.effect == EffectFry {
+		return b.fry(ctx, it, in, base)
+	}
 	strength := t.r.strength
 	switch it.kind {
 	case KindPhoto:
@@ -200,6 +207,27 @@ func (b *Bot) distort(ctx context.Context, t *task, it item, in string, i int, m
 	return out, err
 }
 
+// fry deep-fries one item and returns the output path.
+func (b *Bot) fry(ctx context.Context, it item, in, base string) (string, error) {
+	switch it.kind {
+	case KindPhoto, KindImageFile:
+		return base + ".jpg", b.Engine.FryImage(ctx, in, base+".jpg", false)
+	case KindSticker:
+		return base + ".webp", b.Engine.FryImage(ctx, in, base+".webp", true)
+	case KindVoice:
+		return base + ".ogg", b.Engine.Earrape(ctx, in, base+".ogg")
+	case KindAudio:
+		return base + ".m4a", b.Engine.Earrape(ctx, in, base+".m4a")
+	case KindVideoSticker:
+		return base + ".webm", b.Engine.FryVideo(ctx, in, base+".webm", media.KindSticker, 0)
+	}
+	vk := map[Kind]media.VideoKind{
+		KindVideo: media.KindVideo, KindVideoFile: media.KindVideo,
+		KindAnimation: media.KindAnimation, KindVideoNote: media.KindVideoNote,
+	}[it.kind]
+	return base + ".mp4", b.Engine.FryVideo(ctx, in, base+".mp4", vk, b.Settings.Int(settings.MaxVideoSeconds))
+}
+
 func stageText(lang i18n.Lang, stage media.Stage, done, total int) string {
 	switch stage {
 	case media.StageExtracting:
@@ -227,7 +255,7 @@ func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) erro
 		caption = media.DistortText(it.caption)
 	}
 	reply := telegram.ReplyTo(r.replyTo)
-	markup := moreMarkup(r.lang, r.strength)
+	markup := moreMarkup(r.lang, r.effect, r.strength)
 
 	send := func(kind Kind) error {
 		_, err := telegram.SendFile(ctx, out, func(ctx context.Context, f *models.InputFileUpload) (*models.Message, error) {

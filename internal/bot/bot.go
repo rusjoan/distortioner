@@ -105,6 +105,7 @@ type request struct {
 	lang     i18n.Lang
 	prefs    store.ChatSettings
 	strength media.Strength
+	effect   Effect
 	source   *models.Message
 }
 
@@ -127,6 +128,10 @@ func (b *Bot) onMessage(ctx context.Context, m *models.Message) {
 	}
 
 	cmd, isCmd, foreign := parseCommand(m.Text, b.Me.Username)
+	if !isCmd && !foreign {
+		// A command in the caption applies to the media it is attached to.
+		cmd, isCmd, foreign = parseCommand(m.Caption, b.Me.Username)
+	}
 	if foreign {
 		return
 	}
@@ -188,8 +193,10 @@ func (b *Bot) onCommand(ctx context.Context, m *models.Message, cmd command, isG
 		if isAdmin && !isGroup {
 			b.Admin.Open(ctx, m)
 		}
-	case "distort":
-		if cmd.args != "" {
+	case "distort", "fry":
+		if cmd.name == "fry" {
+			r.effect = EffectFry
+		} else if cmd.args != "" {
 			n, err := strconv.Atoi(cmd.args)
 			if err != nil || n < settings.MinStrength || n > settings.MaxStrength {
 				b.reply(ctx, r, i18n.T(r.lang, "err.strength", settings.MinStrength, settings.MaxStrength))
@@ -197,15 +204,19 @@ func (b *Bot) onCommand(ctx context.Context, m *models.Message, cmd command, isG
 			}
 			r.strength = media.Strength(n)
 		}
-		if m.ReplyToMessage == nil {
+		switch {
+		case m.ReplyToMessage != nil:
+			r.source = m.ReplyToMessage
+		case m.Caption != "":
+			r.source = m // the command was the caption of this media
+		default:
+			text := i18n.T(r.lang, "err.reply_needed", cmd.name)
 			if isGroup {
-				b.reply(ctx, r, i18n.T(r.lang, "err.reply_needed")+i18n.T(r.lang, "err.reply_group"))
-			} else {
-				b.reply(ctx, r, i18n.T(r.lang, "err.reply_needed"))
+				text += i18n.T(r.lang, "err.reply_group")
 			}
+			b.reply(ctx, r, text)
 			return
 		}
-		r.source = m.ReplyToMessage
 		b.process(ctx, r)
 	}
 }
@@ -221,6 +232,9 @@ func (b *Bot) process(ctx context.Context, r request) {
 		if r.isGroup {
 			b.reply(ctx, r, i18n.T(r.lang, "err.nothing"))
 		}
+		return
+	case it.kind == KindText && r.effect == EffectFry:
+		b.reply(ctx, r, i18n.T(r.lang, "err.fry_text"))
 		return
 	case it.kind == KindText:
 		b.distortText(ctx, r)
@@ -307,17 +321,18 @@ func (b *Bot) blockedByRights(chatID int64) bool {
 	return ok
 }
 
-func (b *Bot) record(r request, kind Kind, status string, d time.Duration) {
-	b.Metrics.Request(string(kind), status)
+func (b *Bot) record(r request, k Kind, status string, d time.Duration) {
+	kind := r.effect.label(k)
+	b.Metrics.Request(kind, status)
 	if status == store.StatusOK && d > 0 {
-		b.Metrics.Duration(string(kind), d)
+		b.Metrics.Duration(kind, d)
 	}
 	// Stats must not slow down or fail the request.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := b.Store.RecordEvent(ctx, store.Event{
-			ChatID: r.chatID, IsGroup: r.isGroup, Kind: string(kind), Status: status, Duration: d,
+			ChatID: r.chatID, IsGroup: r.isGroup, Kind: kind, Status: status, Duration: d,
 		}); err != nil {
 			b.Log.Warn("record event", "err", err)
 		}

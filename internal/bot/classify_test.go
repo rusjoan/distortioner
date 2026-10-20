@@ -29,6 +29,8 @@ func TestClassify(t *testing.T) {
 		{"voice", models.Message{Voice: &models.Voice{FileID: "vo"}}, KindVoice, ".ogg", true, false, "vo", ""},
 		{"audio without name", models.Message{Audio: &models.Audio{FileID: "au"}}, KindAudio, ".mp3", true, false, "au", ""},
 		{"text", models.Message{Text: "hello"}, KindText, "", true, false, "", ""},
+		{"command caption dropped", models.Message{Photo: []models.PhotoSize{{FileID: "c"}}, Caption: "/fry"},
+			KindPhoto, ".jpg", true, false, "c", ""},
 		{"empty", models.Message{}, "", "", false, false, "", ""},
 	}
 	for _, c := range cases {
