@@ -113,3 +113,38 @@ func TestE2ECancelQueuedVideo(t *testing.T) {
 	})
 	h.Video.CancelChat(1)
 }
+
+func TestE2EVideoNote(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("note", render(t, "n.mp4",
+		"-f", "lavfi", "-i", "testsrc=size=384x384:rate=30:duration=1",
+		"-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", "-shortest"))
+	h.send(&models.Message{From: user(1, "en"), Chat: private(1), VideoNote: &models.VideoNote{FileID: "note", Length: 384}})
+	if c := h.api.waitFor("sendVideoNote", nil); len(c.files["video_note"]) == 0 {
+		t.Fatal("empty video note")
+	}
+}
+
+// Users may forbid voice and video messages; the result then arrives as a
+// regular video (video notes) or a document (voice messages).
+func TestE2EVoiceMessagesForbidden(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("note", render(t, "n.mp4",
+		"-f", "lavfi", "-i", "testsrc=size=384x384:rate=30:duration=1", "-c:v", "libx264"))
+	h.api.addFile("voice", render(t, "v.ogg", "-f", "lavfi", "-i", "sine=duration=1", "-c:a", "libopus"))
+
+	h.api.failNext("sendVideoNote", "Bad Request: VOICE_MESSAGES_FORBIDDEN")
+	h.send(&models.Message{From: user(1, "en"), Chat: private(1), VideoNote: &models.VideoNote{FileID: "note"}})
+	if c := h.api.waitFor("sendVideo", nil); len(c.files["video"]) == 0 {
+		t.Fatal("no fallback video")
+	}
+
+	h.api.failNext("sendVoice", "Bad Request: VOICE_MESSAGES_FORBIDDEN")
+	h.send(&models.Message{From: user(1, "en"), Chat: private(1), Voice: &models.Voice{FileID: "voice"}})
+	if c := h.api.waitFor("sendDocument", nil); len(c.files["document"]) == 0 {
+		t.Fatal("no fallback document")
+	}
+	if n := len(h.api.find("sendMessage")); n != 1 { // only the video note's progress message
+		t.Fatalf("unexpected messages: %v", h.api.find("sendMessage"))
+	}
+}

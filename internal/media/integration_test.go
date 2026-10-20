@@ -117,6 +117,27 @@ func TestVideoWithSound(t *testing.T) {
 	}
 }
 
+func TestVideoNote(t *testing.T) {
+	e := engine(t)
+	in := fixture(t, e, "in.mp4",
+		"-f", "lavfi", "-i", "testsrc=size=640x640:rate=30:duration=2",
+		"-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-c:a", "aac", "-shortest")
+	out := filepath.Join(t.TempDir(), "out.mp4")
+	if err := e.DistortVideo(context.Background(), in, out, VideoOptions{
+		Kind: KindVideoNote, Strength: 50, MaxSeconds: 60, DistortAudio: true, WorkDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := e.Probe(context.Background(), out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Telegram shows only square videos as round video notes.
+	if info.Width != info.Height || info.Width > 640 || !info.HasAudio {
+		t.Fatalf("%+v", info)
+	}
+}
+
 func TestAnimationHasNoSound(t *testing.T) {
 	e := engine(t)
 	in := fixture(t, e, "in.gif", "-f", "lavfi", "-i", "testsrc=size=201x151:rate=10:duration=1")

@@ -87,6 +87,12 @@ func IsNoRights(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "not enough rights")
 }
 
+// IsVoiceForbidden reports that the user does not accept voice and video
+// messages (a privacy setting), so voices and video notes cannot be sent.
+func IsVoiceForbidden(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "VOICE_MESSAGES_FORBIDDEN")
+}
+
 // IsNotModified reports an edit that did not change anything.
 func IsNotModified(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "message is not modified")

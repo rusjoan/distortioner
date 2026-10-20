@@ -57,4 +57,8 @@ func TestClassification(t *testing.T) {
 	if !IsNoRights(rights) || IsNoRights(blocked) || IsNoRights(nil) {
 		t.Fatal("IsNoRights misclassifies")
 	}
+	voice := fmt.Errorf("%w, Bad Request: VOICE_MESSAGES_FORBIDDEN", bot.ErrorBadRequest)
+	if !IsVoiceForbidden(voice) || IsVoiceForbidden(rights) || IsVoiceForbidden(nil) {
+		t.Fatal("IsVoiceForbidden misclassifies")
+	}
 }

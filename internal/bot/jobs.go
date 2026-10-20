@@ -227,27 +227,47 @@ func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) erro
 	reply := telegram.ReplyTo(r.replyTo)
 	markup := moreMarkup(r.lang, r.strength)
 
-	_, err := telegram.SendFile(ctx, out, func(ctx context.Context, f *models.InputFileUpload) (*models.Message, error) {
+	send := func(kind Kind) error {
+		_, err := telegram.SendFile(ctx, out, func(ctx context.Context, f *models.InputFileUpload) (*models.Message, error) {
+			return b.sendAs(ctx, kind, f, r.chatID, caption, reply, markup)
+		})
+		return err
+	}
+	err := send(it.kind)
+	// Users can forbid voice and video messages in their privacy settings
+	// (Premium); deliver the result as a regular video or a file instead.
+	if telegram.IsVoiceForbidden(err) {
 		switch it.kind {
-		case KindPhoto:
-			return b.TG.SendPhoto(ctx, &tgbot.SendPhotoParams{ChatID: r.chatID, Photo: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
-		case KindSticker, KindVideoSticker:
-			return b.TG.SendSticker(ctx, &tgbot.SendStickerParams{ChatID: r.chatID, Sticker: f, ReplyParameters: reply, ReplyMarkup: markup})
-		case KindAnimation:
-			return b.TG.SendAnimation(ctx, &tgbot.SendAnimationParams{ChatID: r.chatID, Animation: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
-		case KindVideo, KindVideoFile:
-			return b.TG.SendVideo(ctx, &tgbot.SendVideoParams{ChatID: r.chatID, Video: f, Caption: caption, SupportsStreaming: true, ReplyParameters: reply, ReplyMarkup: markup})
 		case KindVideoNote:
-			return b.TG.SendVideoNote(ctx, &tgbot.SendVideoNoteParams{ChatID: r.chatID, VideoNote: f, ReplyParameters: reply, ReplyMarkup: markup})
+			err = send(KindVideo)
 		case KindVoice:
-			return b.TG.SendVoice(ctx, &tgbot.SendVoiceParams{ChatID: r.chatID, Voice: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
-		case KindAudio:
-			return b.TG.SendAudio(ctx, &tgbot.SendAudioParams{ChatID: r.chatID, Audio: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
-		default: // KindImageFile
-			return b.TG.SendDocument(ctx, &tgbot.SendDocumentParams{ChatID: r.chatID, Document: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+			err = send(KindImageFile) // sent as a document
 		}
-	})
+	}
 	return err
+}
+
+// sendAs uploads f as the given kind of message.
+func (b *Bot) sendAs(ctx context.Context, kind Kind, f *models.InputFileUpload, chatID int64, caption string,
+	reply *models.ReplyParameters, markup models.ReplyMarkup) (*models.Message, error) {
+	switch kind {
+	case KindPhoto:
+		return b.TG.SendPhoto(ctx, &tgbot.SendPhotoParams{ChatID: chatID, Photo: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindSticker, KindVideoSticker:
+		return b.TG.SendSticker(ctx, &tgbot.SendStickerParams{ChatID: chatID, Sticker: f, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindAnimation:
+		return b.TG.SendAnimation(ctx, &tgbot.SendAnimationParams{ChatID: chatID, Animation: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindVideo, KindVideoFile:
+		return b.TG.SendVideo(ctx, &tgbot.SendVideoParams{ChatID: chatID, Video: f, Caption: caption, SupportsStreaming: true, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindVideoNote:
+		return b.TG.SendVideoNote(ctx, &tgbot.SendVideoNoteParams{ChatID: chatID, VideoNote: f, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindVoice:
+		return b.TG.SendVoice(ctx, &tgbot.SendVoiceParams{ChatID: chatID, Voice: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+	case KindAudio:
+		return b.TG.SendAudio(ctx, &tgbot.SendAudioParams{ChatID: chatID, Audio: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+	default: // KindImageFile and fallbacks: a plain document
+		return b.TG.SendDocument(ctx, &tgbot.SendDocumentParams{ChatID: chatID, Document: f, Caption: caption, ReplyParameters: reply, ReplyMarkup: markup})
+	}
 }
 
 func (b *Bot) sendAlbum(ctx context.Context, t *task, outputs []string) error {
