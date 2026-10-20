@@ -1,6 +1,6 @@
 services:
   distortioner:
-    image: ghcr.io/graynk/distortioner:latest
+    image: distortioner:dev # local build; deploy/compose.yaml uses the published image
     build: .
     restart: unless-stopped
     env_file: .env

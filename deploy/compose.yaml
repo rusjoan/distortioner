@@ -1,0 +1,57 @@
+# Production setup with the published image. Copy this file to the server
+# next to a .env (see .env.example), then:
+#
+#   docker compose up -d                      # cloud Bot API, files up to 20 MB
+#   docker compose --profile local-api up -d  # own Bot API server, up to 2 GB
+#
+# The local-api profile needs TELEGRAM_API_ID, TELEGRAM_API_HASH and
+# DISTORTIONER_API_URL=http://telegram-bot-api:8081 in .env, and a one-time
+#   docker compose run --rm --no-deps distortioner logout-cloud
+
+services:
+  distortioner:
+    image: ghcr.io/rusjoan/distortioner:2.0 # follows 2.0.x; pin e.g. 2.0.2 for exact versions
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DISTORTIONER_TEMP_DIR: /tmp/distortioner
+      DISTORTIONER_BOT_API_DIR: /var/lib/telegram-bot-api
+    volumes:
+      - data:/app/data
+      # Files of the local Bot API server: read by the bot, deleted after
+      # DISTORTIONER_BOT_API_FILES_TTL (3h). Unused without the profile.
+      - bot-api:/var/lib/telegram-bot-api
+    tmpfs:
+      - /tmp/distortioner:size=2g,mode=1777 # video frames live in memory
+    ports:
+      - "127.0.0.1:8080:8080" # /metrics, /healthz, /readyz; local only
+    stop_grace_period: 45s # a bit longer than DISTORTIONER_SHUTDOWN_GRACE
+    depends_on:
+      telegram-bot-api:
+        condition: service_started
+        required: false
+
+  telegram-bot-api:
+    profiles: [local-api]
+    image: aiogram/telegram-bot-api:10.3
+    restart: unless-stopped
+    env_file: .env # TELEGRAM_API_ID, TELEGRAM_API_HASH
+    environment:
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - bot-api:/var/lib/telegram-bot-api
+    # The server keeps files private to its user (mode 750/600), so it runs
+    # with the bot's uid (10001): the bot reads and deletes them.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        sed -i 's/^telegram-bot-api:x:[0-9]*:[0-9]*:/telegram-bot-api:x:10001:10001:/' /etc/passwd
+        sed -i 's/^telegram-bot-api:x:[0-9]*:/telegram-bot-api:x:10001:/' /etc/group
+        mkdir -p /tmp/telegram-bot-api
+        chown -R telegram-bot-api:telegram-bot-api /var/lib/telegram-bot-api /tmp/telegram-bot-api
+        exec /docker-entrypoint.sh
+
+volumes:
+  data:
+  bot-api:
