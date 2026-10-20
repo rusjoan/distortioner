@@ -359,6 +359,9 @@ func (p *Panel) stats(ctx context.Context, l i18n.Lang, period string) (string, 
 
 	text := i18n.T(l, "admin.stats_body", label, st.Requests, st.Chats, st.Groups, st.Failed, st.Rejected,
 		fmtDuration(st.AvgDuration), lines.String())
+	if fx, err := p.Store.EffectStats(ctx, since); err == nil && len(fx.Effects) > 0 {
+		text += "\n" + effectsBlock(l, fx)
+	}
 	periods := []models.InlineKeyboardButton{}
 	for _, pr := range []string{"day", "week", "month"} {
 		name := i18n.T(l, "admin."+pr)
@@ -590,6 +593,31 @@ func (p *Panel) flushAlerts(ctx context.Context) {
 			p.Log.Warn("send failure alert", "admin", admin, "err", err)
 		}
 	}
+}
+
+// effectsBlock lists the most used effects and where requests came from.
+func effectsBlock(l i18n.Lang, fx store.EffectStats) string {
+	ids := make([]string, 0, len(fx.Effects))
+	total := 0
+	for id, n := range fx.Effects {
+		ids = append(ids, id)
+		total += n
+	}
+	slices.SortFunc(ids, func(a, b string) int {
+		if d := fx.Effects[b] - fx.Effects[a]; d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
+	var b strings.Builder
+	b.WriteString(i18n.T(l, "admin.effects") + "\n")
+	for _, id := range ids {
+		b.WriteString(i18n.T(l, "admin.effect_line", i18n.T(l, "fx."+id), fx.Effects[id], fx.Effects[id]*100/total) + "\n")
+	}
+	b.WriteString("\n" + i18n.T(l, "admin.sources",
+		fx.Sources[store.SourceCommand], fx.Sources[store.SourceRandom], fx.Sources[store.SourcePrompt],
+		fx.Sources[store.SourcePicker], fx.Sources[store.SourceButton]))
+	return b.String()
 }
 
 func truncate(s string, n int) string {

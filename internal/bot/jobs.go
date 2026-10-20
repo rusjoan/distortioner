@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -26,6 +27,7 @@ type task struct {
 	r        request
 	kind     Kind
 	items    []item
+	recipe   media.Recipe
 	workDir  string
 	inputs   []string
 	progress *telegram.Progress
@@ -38,18 +40,37 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 		return
 	}
 
-	heavy := false
+	// One recipe for the whole job; an album gets effects that suit all parts.
+	mkind := items[0].kind.mediaKind()
+	if len(items) > 1 {
+		mkind = media.MediaVideo
+		for _, it := range items {
+			if it.kind.mediaKind() == media.MediaPhoto {
+				mkind = media.MediaPhoto
+			}
+		}
+	}
+	recipe := b.recipeFor(r, mkind, items[0].duration).Applicable(mkind)
+	if len(recipe) == 0 {
+		// A picked set may not suit this media at all: fall back to wobble.
+		recipe = media.Recipe{{ID: "wobble", Strength: r.wobble}}
+	}
+
+	// Only frame-by-frame work on moving pictures is heavy: everything else
+	// is one ffmpeg pass and never waits behind seam carving. Anything that
+	// takes a while (video and sound) gets a status message either way.
+	heavy, slow := false, false
 	for _, it := range items {
-		// Frying is a single cheap ffmpeg pass: it never waits behind seam carving.
-		heavy = heavy || (r.effect == EffectDistort && it.kind.heavy())
+		heavy = heavy || (recipe.PerFrame() && it.kind.heavy())
+		slow = slow || it.kind.heavy() || it.kind == KindVoice || it.kind == KindAudio
 	}
 	pool, poolName := b.Image, "i"
 	if heavy {
 		pool, poolName = b.Video, "v"
 	}
 
-	t := &task{r: r, kind: kind, items: items}
-	if heavy {
+	t := &task{r: r, kind: kind, items: items, recipe: recipe}
+	if slow {
 		// Show progress right away; the cancel button is added once the job has an id.
 		p, err := b.TG.StartProgress(ctx, r.chatID, r.replyTo, i18n.T(r.lang, "progress.downloading"), nil)
 		if err != nil {
@@ -61,9 +82,16 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 
 	// The closures read the id from the job: Submit sets it under the pool's
 	// lock before any worker can see the job.
+	// Estimates are per second of media: a minute-long video weighs sixty
+	// times a photo.
+	var cost float64
+	for _, it := range items {
+		cost += max(it.duration, 1)
+	}
 	var job *jobs.Job
 	job = &jobs.Job{
 		ChatID: r.chatID,
+		Cost:   cost,
 		Run: func(ctx context.Context) error {
 			b.untrack(job.ID())
 			return b.run(ctx, t, poolName, job.ID())
@@ -87,18 +115,20 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 		} else {
 			b.reply(ctx, r, text)
 		}
-		b.record(r, kind, store.StatusRejected, 0)
+		b.record(r, kind, store.StatusRejected, 0, nil)
 		return
 	}
 
 	if t.progress == nil {
 		return
 	}
-	if pos, eta, ok := pool.Position(id); ok {
-		b.mu.Lock()
-		b.tracked[id] = &tracked{pool: pool, poolName: poolName, progress: t.progress, lang: r.lang, userID: r.userID}
-		b.mu.Unlock()
-		_ = b.TG.EditText(ctx, r.chatID, t.progress.MessageID(), queuedText(r.lang, pos, eta), cancelMarkup(r.lang, poolName, id))
+	b.mu.Lock()
+	b.tracked[id] = &tracked{pool: pool, poolName: poolName, progress: t.progress, lang: r.lang, userID: r.userID}
+	b.mu.Unlock()
+	// Only say "in queue" when the job really waits: with a free worker it
+	// starts in a moment, and run shows the first stage itself.
+	if pos, eta, waits := pool.Waits(id); waits {
+		t.progress.Queued(ctx, queuedText(r.lang, pos, eta), cancelMarkup(r.lang, poolName, id))
 	}
 }
 
@@ -106,15 +136,6 @@ func cancelMarkup(lang i18n.Lang, pool string, id uint64) models.ReplyMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
 		{Text: i18n.T(lang, "btn.cancel"), CallbackData: fmt.Sprintf("c:%s:%d", pool, id)},
 	}}}
-}
-
-// moreMarkup is the button under a result that applies the same effect again.
-func moreMarkup(lang i18n.Lang, effect Effect, strength media.Strength) models.ReplyMarkup {
-	button := models.InlineKeyboardButton{Text: i18n.T(lang, "btn.more"), CallbackData: "r:" + strconv.Itoa(int(strength))}
-	if effect == EffectFry {
-		button = models.InlineKeyboardButton{Text: i18n.T(lang, "btn.fry_more"), CallbackData: "f"}
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{button}}}
 }
 
 // run downloads, distorts and sends the result. It runs on a pool worker.
@@ -129,7 +150,8 @@ func (b *Bot) run(ctx context.Context, t *task, poolName string, id uint64) erro
 	var markup models.ReplyMarkup
 	if t.progress != nil {
 		markup = cancelMarkup(t.r.lang, poolName, id)
-		t.progress.Update(ctx, i18n.T(t.r.lang, "progress.downloading"), markup)
+		// Not throttled, and "in queue" can no longer overwrite it.
+		t.progress.Started(ctx, i18n.T(t.r.lang, "progress.downloading"), markup)
 	}
 
 	outputs := make([]string, len(t.items))
@@ -140,105 +162,119 @@ func (b *Bot) run(ctx context.Context, t *task, poolName string, id uint64) erro
 		}
 		t.inputs = append(t.inputs, in)
 
-		out, err := b.distort(ctx, t, it, in, i, markup)
+		out, err := b.apply(ctx, t, it, in, i, markup)
 		if err != nil {
 			return err
 		}
 		outputs[i] = out
 	}
 
+	if t.progress != nil {
+		t.progress.Set(ctx, i18n.T(t.r.lang, "progress.uploading"), markup)
+	}
 	if len(t.items) > 1 {
 		return b.sendAlbum(ctx, t, outputs)
 	}
 	return b.sendResult(ctx, t, t.items[0], outputs[0])
 }
 
-func (b *Bot) distort(ctx context.Context, t *task, it item, in string, i int, markup models.ReplyMarkup) (string, error) {
-	base := filepath.Join(t.workDir, fmt.Sprintf("out%d", i))
-	if t.r.effect == EffectFry {
-		return b.fry(ctx, it, in, base)
+// stageReporter shows a new stage right away and throttles the percent
+// within a stage, so short stages are seen and long ones do not flood.
+type stageReporter struct {
+	ctx      context.Context
+	progress *telegram.Progress
+	lang     i18n.Lang
+	markup   models.ReplyMarkup
+
+	mu    sync.Mutex
+	stage media.Stage
+	seen  bool
+}
+
+func (s *stageReporter) report(stage media.Stage, done, total int) {
+	if s.progress == nil {
+		return
 	}
-	strength := t.r.strength
+	text := stageText(s.lang, stage, done, total)
+	s.mu.Lock()
+	changed := !s.seen || stage != s.stage
+	s.stage, s.seen = stage, true
+	s.mu.Unlock()
+	if changed {
+		s.progress.Set(s.ctx, text, s.markup)
+		return
+	}
+	s.progress.Update(s.ctx, text, s.markup)
+}
+
+// outExt is the extension of the result for this kind of media.
+func outExt(it item) string {
 	switch it.kind {
 	case KindPhoto:
-		return base + ".jpg", b.Engine.DistortImage(ctx, in, base+".jpg", strength, false)
+		return ".jpg"
 	case KindImageFile:
-		ext := it.ext
-		if ext != ".png" && ext != ".webp" && ext != ".jpg" && ext != ".jpeg" {
-			ext = ".png"
+		if it.ext == ".png" || it.ext == ".webp" || it.ext == ".jpg" || it.ext == ".jpeg" {
+			return it.ext
 		}
-		return base + ext, b.Engine.DistortImage(ctx, in, base+ext, strength, false)
+		return ".png"
 	case KindSticker:
-		return base + ".webp", b.Engine.DistortImage(ctx, in, base+".webp", strength, true)
-	case KindVoice:
-		return base + ".ogg", b.Engine.DistortAudio(ctx, in, base+".ogg", strength)
-	case KindAudio:
-		return base + ".m4a", b.Engine.DistortAudio(ctx, in, base+".m4a", strength)
+		return ".webp"
+	case KindVoice, KindAudio:
+		// Telegram takes M4A for voice messages too, and every player opens it.
+		return ".m4a"
+	case KindVideoSticker:
+		return ".webm"
 	}
+	return ".mp4"
+}
 
-	vk := map[Kind]media.VideoKind{
-		KindVideo: media.KindVideo, KindVideoFile: media.KindVideo, KindAnimation: media.KindAnimation,
-		KindVideoNote: media.KindVideoNote, KindVideoSticker: media.KindSticker,
-	}[it.kind]
-	out := base + ".mp4"
-	if vk == media.KindSticker {
-		out = base + ".webm"
+// apply runs the task's recipe on one item and returns the output path.
+func (b *Bot) apply(ctx context.Context, t *task, it item, in string, i int, markup models.ReplyMarkup) (string, error) {
+	// The file name is what the user sees for audio and documents.
+	outDir := filepath.Join(t.workDir, fmt.Sprintf("out%d", i))
+	work := filepath.Join(t.workDir, fmt.Sprintf("work%d", i))
+	for _, d := range []string{outDir, work} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			return "", err
+		}
 	}
-	frames := filepath.Join(t.workDir, fmt.Sprintf("work%d", i))
-	if err := os.Mkdir(frames, 0o700); err != nil {
-		return "", err
+	out := filepath.Join(outDir, resultName(it, t.recipe)+outExt(it))
+	stages := &stageReporter{ctx: ctx, progress: t.progress, lang: t.r.lang, markup: markup}
+	var poster media.Demotivator
+	if t.recipe.Has("demotivator") {
+		poster = b.demotivatorText(it.caption, t.r.lang)
 	}
-	err := b.Engine.DistortVideo(ctx, in, out, media.VideoOptions{
-		Kind:         vk,
-		Strength:     strength,
+	err := b.Engine.Apply(ctx, in, out, t.recipe, media.ApplyOptions{
+		Kind:         it.kind.mediaKind(),
 		MaxSeconds:   b.Settings.Int(settings.MaxVideoSeconds),
 		MaxFPS:       b.Settings.Int(settings.MaxFPS),
 		ProcessScale: b.Settings.Int(settings.ProcessScale),
 		DistortAudio: t.r.prefs.DistortAudio,
-		WorkDir:      frames,
-		Progress: func(stage media.Stage, done, total int) {
-			if t.progress != nil {
-				t.progress.Update(ctx, stageText(t.r.lang, stage, done, total), markup)
-			}
-		},
+		Demotivator:  poster,
+		WorkDir:      work,
+		Progress:     stages.report,
 	})
 	// Frames can take hundreds of megabytes; free them before uploading.
-	_ = os.RemoveAll(frames)
+	_ = os.RemoveAll(work)
 	return out, err
 }
 
-// fry deep-fries one item and returns the output path.
-func (b *Bot) fry(ctx context.Context, it item, in, base string) (string, error) {
-	switch it.kind {
-	case KindPhoto, KindImageFile:
-		return base + ".jpg", b.Engine.FryImage(ctx, in, base+".jpg", false)
-	case KindSticker:
-		return base + ".webp", b.Engine.FryImage(ctx, in, base+".webp", true)
-	case KindVoice:
-		return base + ".ogg", b.Engine.Earrape(ctx, in, base+".ogg")
-	case KindAudio:
-		return base + ".m4a", b.Engine.Earrape(ctx, in, base+".m4a")
-	case KindVideoSticker:
-		return base + ".webm", b.Engine.FryVideo(ctx, in, base+".webm", media.KindSticker, 0)
-	}
-	vk := map[Kind]media.VideoKind{
-		KindVideo: media.KindVideo, KindVideoFile: media.KindVideo,
-		KindAnimation: media.KindAnimation, KindVideoNote: media.KindVideoNote,
-	}[it.kind]
-	return base + ".mp4", b.Engine.FryVideo(ctx, in, base+".mp4", vk, b.Settings.Int(settings.MaxVideoSeconds))
-}
-
 func stageText(lang i18n.Lang, stage media.Stage, done, total int) string {
+	pct := 0
+	if total > 0 {
+		pct = done * 100 / total
+	}
 	switch stage {
 	case media.StageExtracting:
 		return i18n.T(lang, "progress.extracting")
 	case media.StageDistorting:
-		pct := 0
-		if total > 0 {
-			pct = done * 100 / total
-		}
 		return i18n.T(lang, "progress.distorting", progressBar(pct), pct)
+	case media.StageProcessing:
+		return i18n.T(lang, "progress.processing", progressBar(pct), pct)
 	default:
+		if total > 0 {
+			return i18n.T(lang, "progress.encoding_pct", progressBar(pct), pct)
+		}
 		return i18n.T(lang, "progress.encoding")
 	}
 }
@@ -251,11 +287,12 @@ func progressBar(pct int) string {
 func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) error {
 	r := t.r
 	caption := ""
-	if it.caption != "" {
+	if it.caption != "" && !t.recipe.Has("demotivator") { // the poster already shows it
 		caption = media.DistortText(it.caption)
 	}
+	caption = resultCaption(r, t.recipe, caption)
 	reply := telegram.ReplyTo(r.replyTo)
-	markup := moreMarkup(r.lang, r.effect, r.strength)
+	markup := choiceMarkup(r.lang, true)
 
 	send := func(kind Kind) error {
 		_, err := telegram.SendFile(ctx, out, func(ctx context.Context, f *models.InputFileUpload) (*models.Message, error) {
@@ -271,7 +308,7 @@ func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) erro
 		case KindVideoNote:
 			err = send(KindVideo)
 		case KindVoice:
-			err = send(KindImageFile) // sent as a document
+			err = send(KindAudio) // an audio track still plays in the chat
 		}
 	}
 	return err
@@ -310,10 +347,13 @@ func (b *Bot) sendAlbum(ctx context.Context, t *task, outputs []string) error {
 				return nil, err
 			}
 			defer f.Close()
-			name := filepath.Base(out)
+			name := fmt.Sprintf("f%d", i) // attachment field names stay ASCII
 			caption := ""
 			if t.items[i].caption != "" {
 				caption = media.DistortText(t.items[i].caption)
+			}
+			if i == 0 {
+				caption = resultCaption(r, t.recipe, caption)
 			}
 			if t.items[i].kind == KindPhoto {
 				group[i] = &models.InputMediaPhoto{Media: "attach://" + name, MediaAttachment: f, Caption: caption}
@@ -343,7 +383,7 @@ func (b *Bot) done(t *task, err error) {
 		if t.progress != nil {
 			t.progress.Delete(ctx)
 		}
-		b.record(r, t.kind, store.StatusOK, time.Since(t.started))
+		b.record(r, t.kind, store.StatusOK, time.Since(t.started), t.recipe)
 		return
 	}
 
@@ -352,7 +392,7 @@ func (b *Bot) done(t *task, err error) {
 		if t.progress != nil {
 			t.progress.Delete(ctx)
 		}
-		b.record(r, t.kind, store.StatusFailed, 0)
+		b.record(r, t.kind, store.StatusFailed, 0, nil)
 		return
 	}
 
@@ -364,10 +404,10 @@ func (b *Bot) done(t *task, err error) {
 	}
 
 	if userError(err) {
-		b.record(r, t.kind, store.StatusRejected, 0)
+		b.record(r, t.kind, store.StatusRejected, 0, nil)
 		return
 	}
-	b.record(r, t.kind, store.StatusFailed, 0)
+	b.record(r, t.kind, store.StatusFailed, 0, nil)
 	b.Log.Error("job failed", "chat", r.chatID, "kind", t.kind, "err", err)
 
 	f := store.Failure{ChatID: r.chatID, Kind: string(t.kind), Error: err.Error(), At: time.Now()}
@@ -443,4 +483,89 @@ func (b *Bot) housekeeping(ctx context.Context) {
 	if err := b.Store.PruneFailures(ctx, now.Add(-30*24*time.Hour)); err != nil {
 		b.Log.Warn("prune failures", "err", err)
 	}
+}
+
+// kindLabels name results that came without a file name.
+var kindLabels = map[Kind]string{
+	KindPhoto: "photo", KindSticker: "sticker", KindVideoSticker: "sticker", KindAnimation: "gif",
+	KindVideo: "video", KindVideoNote: "note", KindVoice: "voice", KindAudio: "audio",
+	KindImageFile: "image", KindVideoFile: "video",
+}
+
+// resultName is a short file name for a result: the original name when
+// there was one, otherwise the kind, then the effects: "voice_fry",
+// "song_wobble", "photo_bulge+rainbow".
+func resultName(it item, recipe media.Recipe) string {
+	base := strings.TrimSuffix(it.name, filepath.Ext(it.name))
+	base = cleanName(base, 32)
+	if base == "" {
+		base = kindLabels[it.kind]
+	}
+	return base + "_" + strings.Join(recipe.IDs(), "+")
+}
+
+// cleanName keeps letters, digits, '-' and '+', turns everything else into
+// single underscores and cuts the result to n runes.
+func cleanName(s string, n int) string {
+	var b strings.Builder
+	under := false
+	count := 0
+	for _, r := range s {
+		if count == n {
+			break
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '+' {
+			b.WriteRune(r)
+			under = false
+			count++
+			continue
+		}
+		if !under && b.Len() > 0 {
+			b.WriteByte('_')
+			under = true
+			count++
+		}
+	}
+	return strings.TrimRight(b.String(), "_")
+}
+
+// Classic demotivator lines for photos sent without a caption.
+var posterLines = map[i18n.Lang][]media.Demotivator{
+	i18n.RU: {
+		{Title: "ОЖИДАНИЕ", Subtitle: "реальность оказалась иной"},
+		{Title: "ЖИЗНЬ", Subtitle: "она такая"},
+		{Title: "ЗАЧЕМ?", Subtitle: "просто зачем"},
+		{Title: "МОТИВАЦИЯ", Subtitle: "её нет"},
+		{Title: "ПОНЕДЕЛЬНИК", Subtitle: "опять"},
+		{Title: "УСПЕХ", Subtitle: "когда-нибудь потом"},
+	},
+	i18n.EN: {
+		{Title: "EXPECTATIONS", Subtitle: "reality had other plans"},
+		{Title: "LIFE", Subtitle: "it is what it is"},
+		{Title: "WHY?", Subtitle: "just why"},
+		{Title: "MOTIVATION", Subtitle: "there is none"},
+		{Title: "MONDAY", Subtitle: "again"},
+		{Title: "SUCCESS", Subtitle: "maybe later"},
+	},
+}
+
+// demotivatorText takes the poster text from the caption: the first line
+// is the title, the rest the subtitle. Without a caption it picks a classic.
+func (b *Bot) demotivatorText(caption string, lang i18n.Lang) media.Demotivator {
+	var lines []string
+	for _, l := range strings.Split(caption, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > 0 {
+		return media.Demotivator{Title: lines[0], Subtitle: strings.Join(lines[1:], " ")}
+	}
+	pool := posterLines[lang]
+	if pool == nil {
+		pool = posterLines[i18n.EN]
+	}
+	b.rndMu.Lock()
+	defer b.rndMu.Unlock()
+	return pool[b.rnd.IntN(len(pool))]
 }

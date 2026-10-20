@@ -6,9 +6,10 @@ ARG DEBIAN_VERSION=trixie
 FROM golang:${GO_VERSION}-${DEBIAN_VERSION} AS go
 
 # Debian's ImageMagick 7 ships with liquid rescale (liblqr) support.
+# Liberation fonts (with Cyrillic) are for demotivator captions.
 FROM debian:${DEBIAN_VERSION}-slim AS tools
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg imagemagick ca-certificates tini \
+ && apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-liberation ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
 FROM --platform=$BUILDPLATFORM go AS build

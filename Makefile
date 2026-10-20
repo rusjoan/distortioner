@@ -6,7 +6,7 @@ GIT_VER   := $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 LDFLAGS   := -s -w -X main.version=$(GIT_VER)
 
 .DEFAULT_GOAL := help
-.PHONY: help build run test cover vet fmt fmt-check lint vuln check docker itest itest-bench release release-dry
+.PHONY: help build run frylab test cover vet fmt fmt-check lint vuln check docker itest itest-bench release release-dry
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -42,6 +42,9 @@ vuln: ## Check dependencies for known vulnerabilities
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 check: fmt-check vet lint test ## Everything CI runs, except Docker
+
+frylab: ## Tune the fry preset on a video: http://127.0.0.1:8095
+	$(GO) run ./cmd/frylab -dir testfiles
 
 docker: ## Build the runtime image
 	docker build --build-arg VERSION=$(GIT_VER) -t $(IMAGE) .

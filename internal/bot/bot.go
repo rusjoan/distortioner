@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"log/slog"
+	"math/rand/v2"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -26,6 +27,9 @@ import (
 	"github.com/graynk/distortioner/internal/store"
 	"github.com/graynk/distortioner/internal/telegram"
 )
+
+// defaultFryStrength is the reference fry; strength moves it both ways.
+const defaultFryStrength = 50
 
 const (
 	// maxUpdateAge drops updates that piled up while the bot was down.
@@ -58,7 +62,11 @@ type Deps struct {
 type Bot struct {
 	Deps
 
-	albums *albumCollector
+	albums  *albumCollector
+	pending *pendingStore
+
+	rndMu sync.Mutex
+	rnd   *rand.Rand
 
 	mu       sync.Mutex
 	noRights map[int64]time.Time
@@ -76,8 +84,9 @@ type tracked struct {
 
 // New creates the bot.
 func New(d Deps) *Bot {
-	b := &Bot{Deps: d, noRights: map[int64]time.Time{}, tracked: map[uint64]*tracked{}}
-	b.albums = newAlbumCollector(albumWait, b.processAlbum)
+	b := &Bot{Deps: d, noRights: map[int64]time.Time{}, tracked: map[uint64]*tracked{},
+		pending: newPendingStore(), rnd: newRand()}
+	b.albums = newAlbumCollector(albumWait, b.ask)
 	return b
 }
 
@@ -98,15 +107,18 @@ func (b *Bot) Handle(ctx context.Context, _ *tgbot.Bot, u *models.Update) {
 
 // request is one distortion request after routing.
 type request struct {
-	chatID   int64
-	isGroup  bool
-	userID   int64
-	replyTo  int
-	lang     i18n.Lang
-	prefs    store.ChatSettings
-	strength media.Strength
-	effect   Effect
-	source   *models.Message
+	chatID  int64
+	isGroup bool
+	userID  int64
+	replyTo int
+	lang    i18n.Lang
+	prefs   store.ChatSettings
+	mode    Mode
+	recipe  media.Recipe // for ModeRecipe
+	wobble  media.Strength
+	fry     media.Strength
+	via     string // statistics source when it is not implied by the mode
+	source  *models.Message
 }
 
 func (b *Bot) onMessage(ctx context.Context, m *models.Message) {
@@ -143,11 +155,17 @@ func (b *Bot) onMessage(ctx context.Context, m *models.Message) {
 		return // in groups we only react to commands
 	}
 	r := b.newRequest(ctx, m, m.From, m.ID)
+	it, ok, _ := classify(m)
+	if !ok || it.kind == KindText {
+		b.process(ctx, r) // text is distorted right away; the rest explains itself
+		return
+	}
+	// Media without a command: ask what to do.
 	if m.MediaGroupID != "" {
 		b.albums.add(m.MediaGroupID, r)
 		return
 	}
-	b.process(ctx, r)
+	b.ask(ctx, []request{r})
 }
 
 func (b *Bot) newRequest(ctx context.Context, source *models.Message, from *models.User, replyTo int) request {
@@ -157,14 +175,15 @@ func (b *Bot) newRequest(ctx context.Context, source *models.Message, from *mode
 		lang = i18n.Detect(from.LanguageCode)
 	}
 	return request{
-		chatID:   source.Chat.ID,
-		isGroup:  source.Chat.Type != models.ChatTypePrivate,
-		userID:   from.ID,
-		replyTo:  replyTo,
-		lang:     lang,
-		prefs:    prefs,
-		strength: media.Strength(prefs.Strength),
-		source:   source,
+		chatID:  source.Chat.ID,
+		isGroup: source.Chat.Type != models.ChatTypePrivate,
+		userID:  from.ID,
+		replyTo: replyTo,
+		lang:    lang,
+		prefs:   prefs,
+		wobble:  media.Strength(prefs.Strength),
+		fry:     media.Strength(prefs.FryStrength),
+		source:  source,
 	}
 }
 
@@ -174,7 +193,10 @@ func (b *Bot) prefs(ctx context.Context, chatID int64) store.ChatSettings {
 		b.Log.Warn("load chat settings", "chat", chatID, "err", err)
 	}
 	if !ok {
-		p = store.ChatSettings{Strength: b.Settings.Int(settings.DefaultStrength), DistortAudio: true}
+		p = store.ChatSettings{Strength: b.Settings.Int(settings.DefaultStrength), FryStrength: defaultFryStrength, DistortAudio: true}
+	}
+	if p.FryStrength == 0 {
+		p.FryStrength = defaultFryStrength
 	}
 	return p
 }
@@ -193,16 +215,40 @@ func (b *Bot) onCommand(ctx context.Context, m *models.Message, cmd command, isG
 		if isAdmin && !isGroup {
 			b.Admin.Open(ctx, m)
 		}
-	case "distort", "fry":
-		if cmd.name == "fry" {
-			r.effect = EffectFry
-		} else if cmd.args != "" {
+	case "fx":
+		// The menu of the private chat, for media in a group.
+		target := m.ReplyToMessage
+		if target == nil && m.Caption != "" {
+			target = m
+		}
+		if target == nil {
+			text := i18n.T(r.lang, "err.reply_needed", cmd.name)
+			if isGroup {
+				text += i18n.T(r.lang, "err.reply_group")
+			}
+			b.reply(ctx, r, text)
+			return
+		}
+		r.source = target
+		if _, ok, unsupported := classify(target); !ok || unsupported {
+			b.process(ctx, r) // explains what is wrong with it
+			return
+		}
+		b.ask(ctx, []request{r})
+	case "distort", "wobble", "fry":
+		r.mode = map[string]Mode{"distort": ModeRandom, "wobble": ModeWobble, "fry": ModeFry}[cmd.name]
+		if cmd.args != "" {
 			n, err := strconv.Atoi(cmd.args)
 			if err != nil || n < settings.MinStrength || n > settings.MaxStrength {
 				b.reply(ctx, r, i18n.T(r.lang, "err.strength", settings.MinStrength, settings.MaxStrength))
 				return
 			}
-			r.strength = media.Strength(n)
+			if cmd.name != "fry" {
+				r.wobble = media.Strength(n)
+			}
+			if cmd.name != "wobble" {
+				r.fry = media.Strength(n)
+			}
 		}
 		switch {
 		case m.ReplyToMessage != nil:
@@ -233,9 +279,6 @@ func (b *Bot) process(ctx context.Context, r request) {
 			b.reply(ctx, r, i18n.T(r.lang, "err.nothing"))
 		}
 		return
-	case it.kind == KindText && r.effect == EffectFry:
-		b.reply(ctx, r, i18n.T(r.lang, "err.fry_text"))
-		return
 	case it.kind == KindText:
 		b.distortText(ctx, r)
 		return
@@ -244,13 +287,28 @@ func (b *Bot) process(ctx context.Context, r request) {
 }
 
 func (b *Bot) distortText(ctx context.Context, r request) {
-	text := media.DistortText(r.source.Text)
-	if _, err := b.TG.SendText(ctx, r.chatID, r.replyTo, html.EscapeString(text), nil); err != nil {
+	var recipe media.Recipe
+	switch r.mode {
+	case ModeWobble:
+		recipe = media.Recipe{{ID: "mock"}} // the classic
+	case ModeFry:
+		recipe = media.FriedText
+	case ModeRecipe:
+		recipe = r.recipe
+	default:
+		b.rndMu.Lock()
+		recipe = media.RandomText(b.rnd)
+		b.rndMu.Unlock()
+	}
+	b.rndMu.Lock()
+	text := media.ApplyText(b.rnd, recipe, r.source.Text)
+	b.rndMu.Unlock()
+	if _, err := b.TG.SendText(ctx, r.chatID, r.replyTo, html.EscapeString(text), textChoiceMarkup(r.lang, true)); err != nil {
 		b.handleSendError(ctx, r, err)
-		b.record(r, KindText, store.StatusFailed, 0)
+		b.record(r, KindText, store.StatusFailed, 0, nil)
 		return
 	}
-	b.record(r, KindText, store.StatusOK, 0)
+	b.record(r, KindText, store.StatusOK, 0, recipe)
 }
 
 // admit applies maintenance mode, size and rate limits. It replies itself
@@ -284,7 +342,7 @@ func (b *Bot) admit(ctx context.Context, r request, kind Kind, items []item) boo
 
 func (b *Bot) reject(ctx context.Context, r request, kind Kind, text string) {
 	b.reply(ctx, r, text)
-	b.record(r, kind, store.StatusRejected, 0)
+	b.record(r, kind, store.StatusRejected, 0, nil)
 }
 
 func (b *Bot) reply(ctx context.Context, r request, text string) {
@@ -321,11 +379,18 @@ func (b *Bot) blockedByRights(chatID int64) bool {
 	return ok
 }
 
-func (b *Bot) record(r request, k Kind, status string, d time.Duration) {
-	kind := r.effect.label(k)
+func (b *Bot) record(r request, k Kind, status string, d time.Duration, recipe media.Recipe) {
+	kind := string(k)
 	b.Metrics.Request(kind, status)
 	if status == store.StatusOK && d > 0 {
 		b.Metrics.Duration(kind, d)
+	}
+	var effects []string
+	if status == store.StatusOK {
+		effects = recipe.IDs()
+		for _, e := range effects {
+			b.Metrics.Effect(e)
+		}
 	}
 	// Stats must not slow down or fail the request.
 	go func() {
@@ -333,6 +398,7 @@ func (b *Bot) record(r request, k Kind, status string, d time.Duration) {
 		defer cancel()
 		if err := b.Store.RecordEvent(ctx, store.Event{
 			ChatID: r.chatID, IsGroup: r.isGroup, Kind: kind, Status: status, Duration: d,
+			Source: r.statSource(), Effects: effects,
 		}); err != nil {
 			b.Log.Warn("record event", "err", err)
 		}
@@ -388,6 +454,7 @@ func (b *Bot) Run(ctx context.Context) {
 			b.refreshPositions(ctx)
 		case <-hourly.C:
 			b.housekeeping(ctx)
+			b.pending.sweep(time.Now())
 		case <-sweep.C:
 			b.sweepBotAPIFiles()
 		}
@@ -417,12 +484,14 @@ func (b *Bot) refreshPositions(ctx context.Context) {
 	}
 	b.mu.Unlock()
 	for id, t := range snapshot {
-		pos, eta, ok := t.pool.Position(id)
-		if !ok { // started or finished between Submit and tracking
-			b.untrack(id)
+		pos, eta, waits := t.pool.Waits(id)
+		if !waits {
+			if _, _, queued := t.pool.Position(id); !queued { // started or finished
+				b.untrack(id)
+			}
 			continue
 		}
-		t.progress.Update(ctx, queuedText(t.lang, pos, eta), cancelMarkup(t.lang, t.poolName, id))
+		t.progress.Queued(ctx, queuedText(t.lang, pos, eta), cancelMarkup(t.lang, t.poolName, id))
 	}
 }
 

@@ -28,7 +28,22 @@ func meanVolume(t *testing.T, path string) float64 {
 	return v
 }
 
-// quietSpeechLike is a quiet, wobbling tone with sound and video.
+// maxVolume returns the peak volume of the first audio stream in dB.
+func maxVolume(t *testing.T, path string) float64 {
+	t.Helper()
+	out, err := exec.Command("ffmpeg", "-hide_banner", "-nostats", "-i", path, "-vn", "-af", "volumedetect", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	m := regexp.MustCompile(`max_volume: (-?[0-9.]+) dB`).FindSubmatch(out)
+	if m == nil {
+		t.Fatalf("no volume in %s", out)
+	}
+	v, _ := strconv.ParseFloat(string(m[1]), 64)
+	return v
+}
+
+// quietVideo is a quiet tone with sound and video.
 func quietVideo(t *testing.T, e *Engine, size string, seconds int) string {
 	return fixture(t, e, "in.mp4",
 		"-f", "lavfi", "-i", "testsrc2=size="+size+":rate=30:duration="+strconv.Itoa(seconds),

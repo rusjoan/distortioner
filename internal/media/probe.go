@@ -18,6 +18,7 @@ type Info struct {
 	FPS        float64 // 0 if unknown
 	VideoCodec string
 	Alpha      bool // VP9 with an alpha channel (video stickers)
+	SampleRate int  // of the first audio stream, 0 if none
 }
 
 type probeOutput struct {
@@ -29,6 +30,7 @@ type probeOutput struct {
 		AvgFrameRate string            `json:"avg_frame_rate"`
 		RFrameRate   string            `json:"r_frame_rate"`
 		Duration     string            `json:"duration"`
+		SampleRate   string            `json:"sample_rate"`
 		Tags         map[string]string `json:"tags"`
 	} `json:"streams"`
 	Format struct {
@@ -74,6 +76,9 @@ func parseProbe(raw []byte) (Info, error) {
 				info.Duration = parseFloat(s.Duration)
 			}
 		case "audio":
+			if !info.HasAudio {
+				info.SampleRate, _ = strconv.Atoi(s.SampleRate)
+			}
 			info.HasAudio = true
 		}
 	}

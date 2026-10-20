@@ -160,6 +160,15 @@ func (c *Client) EditText(ctx context.Context, chatID int64, messageID int, text
 	return err
 }
 
+// EditMarkup replaces the buttons of a message; "not modified" is ignored.
+func (c *Client) EditMarkup(ctx context.Context, chatID int64, messageID int, markup models.ReplyMarkup) {
+	_, _ = Retry(ctx, func(ctx context.Context) (*models.Message, error) {
+		return c.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
+			ChatID: chatID, MessageID: messageID, ReplyMarkup: markup,
+		})
+	})
+}
+
 // Delete deletes a message, ignoring the result.
 func (c *Client) Delete(ctx context.Context, chatID int64, messageID int) {
 	_, _ = c.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: chatID, MessageID: messageID})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,9 +33,11 @@ const testToken = "123:secret"
 
 // call is one Bot API request seen by the fake server.
 type call struct {
-	method string
-	params map[string]string
-	files  map[string][]byte
+	method   string
+	params   map[string]string
+	files    map[string][]byte
+	names    map[string]string // uploaded file names by field
+	resultID int               // message_id returned for send* calls
 }
 
 // fakeAPI is a minimal Bot API server that records requests.
@@ -72,7 +75,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	method := strings.TrimPrefix(r.URL.Path, "/bot"+testToken+"/")
-	c := call{method: method, params: map[string]string{}, files: map[string][]byte{}}
+	c := call{method: method, params: map[string]string{}, files: map[string][]byte{}, names: map[string]string{}}
 	if err := r.ParseMultipartForm(32 << 20); err == nil {
 		for k, v := range r.MultipartForm.Value {
 			c.params[k] = v[0]
@@ -82,13 +85,15 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			data, _ := io.ReadAll(file)
 			_ = file.Close()
 			c.files[k] = data
+			c.names[k] = fhs[0].Filename
 		}
 	}
 
 	f.mu.Lock()
-	f.calls = append(f.calls, c)
 	f.nextID++
 	id := f.nextID
+	c.resultID = id
+	f.calls = append(f.calls, c)
 	failure, failing := f.fail[method]
 	delete(f.fail, method)
 	member := f.member
@@ -234,6 +239,7 @@ func newHarness(t *testing.T) *harness {
 		Metrics: metrics.New(), Admin: panel, Log: log,
 		Me: &models.User{ID: 123, IsBot: true, Username: "distortioner_bot"},
 	})
+	b.rnd = rand.New(rand.NewPCG(7, 7)) // deterministic random picks
 	return &harness{Bot: b, api: api, cfg: cfg}
 }
 
@@ -248,6 +254,29 @@ func (h *harness) send(m *models.Message) {
 		m.Date = int(time.Now().Unix())
 	}
 	h.Handle(context.Background(), nil, &models.Update{Message: m})
+}
+
+// question waits for our "what to do?" question and until the bot
+// remembers it: the bot stores it right after Telegram accepts it, which a
+// test can outrun, a human cannot.
+func (h *harness) question(chatID int64) call {
+	h.api.t.Helper()
+	c := h.api.waitFor("sendMessage", func(c call) bool {
+		return c.params["text"] == "What should I do with it?" || c.params["text"] == "Что с этим сделать?"
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for h.pending.get(chatID, c.resultID) == nil {
+		if time.Now().After(deadline) {
+			h.api.t.Fatal("question not registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return c
+}
+
+// command sends "/<cmd>" in reply to target, as a user would in a group.
+func (h *harness) command(from *models.User, chat models.Chat, cmd string, target *models.Message) {
+	h.send(&models.Message{From: from, Chat: chat, Text: cmd, ReplyToMessage: target})
 }
 
 func (h *harness) press(from models.User, msg *models.Message, data string) {

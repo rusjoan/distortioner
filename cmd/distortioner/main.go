@@ -238,8 +238,10 @@ func httpHandler(cfg *config.Config, tb *tgbot.Bot, st *store.Store, m *metrics.
 func setCommands(ctx context.Context, tb *tgbot.Bot, cfg *config.Config, log *slog.Logger) {
 	type cmd struct{ name, en, ru string }
 	public := []cmd{
-		{"distort", "Distort the message you reply to", "Исказить сообщение, на которое отвечаешь"},
+		{"distort", "Random effects on the message you reply to", "Случайные эффекты на сообщение, на которое отвечаешь"},
+		{"wobble", "The classic distortion", "Классическое искажение"},
 		{"fry", "Deep fry: burnt colours, shaking, earrape", "Прожарка: выжженные цвета, тряска, earrape"},
+		{"fx", "Menu of effects for the message you reply to", "Меню эффектов для сообщения, на которое отвечаешь"},
 		{"settings", "Strength, sound and language", "Сила, звук и язык"},
 		{"help", "What the bot can do", "Что умеет бот"},
 	}

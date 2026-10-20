@@ -33,11 +33,17 @@ type Job struct {
 	ChatID int64
 	Run    func(ctx context.Context) error
 	Done   func(err error)
+	// Cost is the size of the work, e.g. seconds of media; it scales the
+	// time estimates. Zero counts as 1.
+	Cost float64
 
-	id     uint64
-	ctx    context.Context
-	cancel context.CancelCauseFunc
+	id      uint64
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	started time.Time
 }
+
+func (j *Job) cost() float64 { return max(j.Cost, 1) }
 
 // ID returns the id assigned by Submit.
 func (j *Job) ID() uint64 { return j.id }
@@ -65,6 +71,7 @@ type Pool struct {
 	perChat map[int64]int // queued + running
 	nextID  uint64
 	avg     time.Duration // moving average of job duration
+	rate    float64       // moving average of seconds of work per unit of cost
 	closed  bool
 
 	baseCtx context.Context
@@ -170,17 +177,17 @@ func (p *Pool) worker() {
 			p.mu.Unlock()
 			return
 		}
+		job.started = time.Now()
 		p.running[job.id] = job
 		p.mu.Unlock()
 
-		start := time.Now()
 		err := p.exec(job)
 
 		p.mu.Lock()
 		delete(p.running, job.id)
 		p.release(job.ChatID)
 		if err == nil {
-			p.observe(time.Since(start))
+			p.observe(time.Since(job.started), job.cost())
 		}
 		p.mu.Unlock()
 
@@ -212,12 +219,14 @@ func (p *Pool) exec(job *Job) (err error) {
 }
 
 // observe updates the moving average used for ETAs. Caller holds mu.
-func (p *Pool) observe(d time.Duration) {
+func (p *Pool) observe(d time.Duration, cost float64) {
+	r := d.Seconds() / cost
 	if p.avg == 0 {
-		p.avg = d
+		p.avg, p.rate = d, r
 		return
 	}
 	p.avg = (p.avg*4 + d) / 5
+	p.rate = (p.rate*4 + r) / 5
 }
 
 func (p *Pool) release(chat int64) {
@@ -233,6 +242,10 @@ func (p *Pool) release(chat int64) {
 func (p *Pool) Position(id uint64) (pos int, eta time.Duration, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.positionLocked(id)
+}
+
+func (p *Pool) positionLocked(id uint64) (pos int, eta time.Duration, ok bool) {
 
 	var chat int64
 	idx := -1
@@ -254,30 +267,61 @@ func (p *Pool) Position(id uint64) (pos int, eta time.Duration, ok bool) {
 	// Each chat in a ring gets one turn per round and this job is served in
 	// round idx+1: chats up to and including ours in ring order contribute
 	// idx+1 jobs at most, chats after ours only idx.
-	ahead := func(ring []int64) int {
-		n, rounds := 0, idx+1
+	var before []*Job // served before ours, ours included
+	collect := func(ring []int64, all bool) {
+		rounds := idx + 1
 		for _, c := range ring {
-			n += min(len(p.queues[c]), rounds)
+			q := p.queues[c]
+			if !all {
+				q = q[:min(len(q), rounds)]
+			}
+			before = append(before, q...)
 			if c == chat {
 				rounds = idx
 			}
 		}
-		return n
 	}
 	if slices.Contains(p.prio, chat) {
-		pos = ahead(p.prio)
+		collect(p.prio, false)
 	} else {
-		for _, c := range p.prio {
-			pos += len(p.queues[c])
-		}
-		pos += ahead(p.normal)
+		collect(p.prio, true)
+		collect(p.normal, false)
 	}
+	pos = len(before)
+	return pos, p.estimate(before, id), true
+}
 
-	if p.avg > 0 {
-		rounds := (pos + len(p.running) + p.workers - 1) / p.workers
-		eta = time.Duration(rounds) * p.avg
+// Waits reports, atomically with its place in line, whether a pending job
+// really waits: it does not when a worker is free to take it right away.
+func (p *Pool) Waits(id uint64) (pos int, eta time.Duration, waits bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pos, eta, ok := p.positionLocked(id)
+	if !ok {
+		return 0, 0, false
 	}
-	return pos, eta, true
+	return pos, eta, len(p.running)+pos > p.workers
+}
+
+// estimate is the time until the job is done: the work of the jobs served
+// before it and what is left of the running ones, shared by the workers,
+// plus its own work. Work is cost × the learned rate. Caller holds mu.
+func (p *Pool) estimate(before []*Job, id uint64) time.Duration {
+	if p.rate == 0 {
+		return 0
+	}
+	var work, own float64
+	for _, j := range before {
+		if j.id == id {
+			own = j.cost() * p.rate
+			continue
+		}
+		work += j.cost() * p.rate
+	}
+	for _, j := range p.running {
+		work += max(j.cost()*p.rate-time.Since(j.started).Seconds(), 0)
+	}
+	return time.Duration((work/float64(p.workers) + own) * float64(time.Second))
 }
 
 // Cancel cancels a pending or running job. It reports whether it was found.

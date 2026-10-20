@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"sync/atomic"
 
@@ -48,6 +44,7 @@ const (
 	StageExtracting Stage = iota
 	StageDistorting
 	StageEncoding
+	StageProcessing // a single ffmpeg pass: effects without per-frame work
 )
 
 // VideoOptions configures DistortVideo.
@@ -69,73 +66,27 @@ type VideoOptions struct {
 	Progress func(stage Stage, done, total int)
 }
 
-// DistortVideo distorts every frame of in and writes the result to out.
+// mediaKind maps the video kinds of the wobble/fry API to media kinds.
+func (k VideoKind) mediaKind() MediaKind {
+	switch k {
+	case KindAnimation:
+		return MediaAnimation
+	case KindVideoNote:
+		return MediaVideoNote
+	case KindSticker:
+		return MediaVideoSticker
+	default:
+		return MediaVideo
+	}
+}
+
+// DistortVideo applies wobble (seam carving on every frame) to a video.
 func (e *Engine) DistortVideo(ctx context.Context, in, out string, opt VideoOptions) error {
-	report := opt.Progress
-	if report == nil {
-		report = func(Stage, int, int) {}
-	}
-
-	info, err := e.Probe(ctx, in)
-	if err != nil {
-		return err
-	}
-	if !info.HasVideo {
-		return ErrNoVideo
-	}
-	maxSec := opt.MaxSeconds
-	if opt.Kind == KindSticker {
-		maxSec = stickerMaxSec
-	}
-	// Stickers are trimmed rather than rejected; Telegram caps them anyway.
-	if opt.Kind != KindSticker && maxSec > 0 && info.Duration > float64(maxSec)+0.5 {
-		return &TooLongError{Limit: maxSec}
-	}
-
-	maxFPS := opt.MaxFPS
-	if maxFPS <= 0 {
-		maxFPS = defaultMaxFPS
-	}
-	fps := info.FPS
-	if fps <= 0 || math.IsInf(fps, 0) {
-		fps = defaultFPS
-	}
-	fps = min(fps, float64(maxFPS))
-	rate := strconv.FormatFloat(fps, 'f', 3, 64)
-
-	framesDir := filepath.Join(opt.WorkDir, "frames")
-	if err := os.MkdirAll(framesDir, 0o700); err != nil {
-		return err
-	}
-	pattern := filepath.Join(framesDir, "%06d.pam")
-
-	report(StageExtracting, 0, 0)
-	if err := e.extractFrames(ctx, in, pattern, info, rate, maxSec); err != nil {
-		return fmt.Errorf("extract frames: %w", err)
-	}
-
-	frames, err := filepath.Glob(filepath.Join(framesDir, "*.pam"))
-	if err != nil {
-		return err
-	}
-	if len(frames) == 0 {
-		return errors.New("extract frames: no frames produced")
-	}
-	sort.Strings(frames)
-
-	scale := opt.ProcessScale
-	if scale <= 0 || scale > 100 {
-		scale = 100
-	}
-	if err := e.distortFrames(ctx, frames, opt.Strength, scale, report); err != nil {
-		return fmt.Errorf("distort frames: %w", err)
-	}
-
-	report(StageEncoding, 0, 0)
-	if err := e.encode(ctx, in, pattern, out, info, rate, opt); err != nil {
-		return fmt.Errorf("encode: %w", err)
-	}
-	return nil
+	return e.Apply(ctx, in, out, Recipe{{ID: "wobble", Strength: opt.Strength}}, ApplyOptions{
+		Kind: opt.Kind.mediaKind(), MaxSeconds: opt.MaxSeconds, MaxFPS: opt.MaxFPS,
+		ProcessScale: opt.ProcessScale, DistortAudio: opt.DistortAudio,
+		WorkDir: opt.WorkDir, Progress: opt.Progress,
+	})
 }
 
 func (e *Engine) extractFrames(ctx context.Context, in, pattern string, info Info, rate string, maxSec int) error {
@@ -160,10 +111,10 @@ func (e *Engine) extractFrames(ctx context.Context, in, pattern string, info Inf
 	return err
 }
 
-// distortFrames distorts frames in place, in batches: one ImageMagick
-// process per batch saves process start-up and initialisation per frame.
-// Batches stay small enough to keep every CPU slot busy.
-func (e *Engine) distortFrames(ctx context.Context, frames []string, strength Strength, scale int, report func(Stage, int, int)) error {
+// processFrames runs ImageMagick operators on frames in place, in
+// batches: one process per batch saves start-up and initialisation per
+// frame. Batches stay small enough to keep every CPU slot busy.
+func (e *Engine) processFrames(ctx context.Context, frames, ops []string, report func(Stage, int, int)) error {
 	total := len(frames)
 	report(StageDistorting, 0, total)
 
@@ -174,7 +125,12 @@ func (e *Engine) distortFrames(ctx context.Context, frames []string, strength St
 	for start := 0; start < total; start += batch {
 		files := frames[start:min(start+batch, total)]
 		g.Go(func() error {
-			if err := e.distortBatch(ctx, files, strength, scale); err != nil {
+			if err := e.acquire(ctx); err != nil {
+				return err
+			}
+			defer e.release()
+			args := append(append([]string{"mogrify"}, ops...), files...)
+			if _, err := run(ctx, e.magickEn, e.Magick, args...); err != nil {
 				return err
 			}
 			report(StageDistorting, int(done.Add(int64(len(files)))), total)
@@ -182,62 +138,4 @@ func (e *Engine) distortFrames(ctx context.Context, frames []string, strength St
 		})
 	}
 	return g.Wait()
-}
-
-// distortBatch distorts frames in place with a single mogrify process.
-// With scale below 100 the frame is shrunk for seam carving only and
-// scaled back in the same step, so its size does not change.
-func (e *Engine) distortBatch(ctx context.Context, files []string, strength Strength, scale int) error {
-	if err := e.acquire(ctx); err != nil {
-		return err
-	}
-	defer e.release()
-
-	keep := strength.keep()
-	args := []string{"mogrify"}
-	if scale < 100 {
-		args = append(args, "-resize", fmt.Sprintf("%d%%", scale))
-	}
-	back := 100 * (100 / float64(keep)) * (100 / float64(scale))
-	args = append(args,
-		"-liquid-rescale", fmt.Sprintf("%d%%", keep),
-		"-resize", fmt.Sprintf("%.4f%%", back))
-	_, err := run(ctx, e.magickEn, e.Magick, append(args, files...)...)
-	return err
-}
-
-func (e *Engine) encode(ctx context.Context, in, pattern, out string, info Info, rate string, opt VideoOptions) error {
-	args := []string{"-nostdin", "-y", "-v", "error", "-framerate", rate, "-i", pattern}
-
-	if opt.Kind == KindSticker {
-		args = append(args,
-			"-map", "0:v",
-			"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", maxSide, maxSide),
-			"-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-			"-b:v", "400k", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-an",
-			"-t", strconv.Itoa(stickerMaxSec),
-			"-f", "webm", out)
-		_, err := run(ctx, nil, e.FFmpeg, args...)
-		return err
-	}
-
-	withAudio := info.HasAudio && (opt.Kind == KindVideo || opt.Kind == KindVideoNote)
-	if withAudio {
-		args = append(args, "-i", in, "-map", "0:v", "-map", "1:a:0")
-		if opt.DistortAudio {
-			args = append(args, "-af", vibrato(opt.Strength))
-		}
-		args = append(args, "-c:a", "aac", "-b:a", "128k", "-shortest")
-	} else {
-		args = append(args, "-map", "0:v", "-an")
-	}
-
-	// yuv420p needs even dimensions.
-	args = append(args, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", e.Codec)
-	if e.Codec == "libx264" {
-		args = append(args, "-preset", "veryfast", "-crf", "26")
-	}
-	args = append(args, "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", out)
-	_, err := run(ctx, nil, e.FFmpeg, args...)
-	return err
 }

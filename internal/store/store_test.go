@@ -63,7 +63,7 @@ func TestChatSettings(t *testing.T) {
 	if _, ok, err := s.ChatSettings(ctx, 7); ok || err != nil {
 		t.Fatalf("expected none, got ok=%v err=%v", ok, err)
 	}
-	want := ChatSettings{Strength: 70, DistortAudio: true, Lang: "ru"}
+	want := ChatSettings{Strength: 70, FryStrength: 30, DistortAudio: true, Lang: "ru"}
 	if err := s.SaveChatSettings(ctx, 7, want); err != nil {
 		t.Fatal(err)
 	}
@@ -157,5 +157,38 @@ func TestImportsLegacyStats(t *testing.T) {
 	defer s2.Close()
 	if st, _ := s2.Stats(ctx, time.Time{}); st.Requests != 2 {
 		t.Fatalf("re-imported: %+v", st)
+	}
+}
+
+func TestEffectStats(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+	for _, e := range []Event{
+		{ChatID: 1, Kind: "video", Status: StatusOK, Source: SourceRandom, Effects: []string{"bulge", "earrape"}, At: now},
+		{ChatID: 1, Kind: "photo", Status: StatusOK, Source: SourcePrompt, Effects: []string{"fry"}, At: now},
+		{ChatID: 2, Kind: "video", Status: StatusFailed, Source: SourceRandom, Effects: []string{"bulge"}, At: now},
+		{ChatID: 3, Kind: "voice", Status: StatusOK, Source: SourceRandom, Effects: []string{"earrape"}, At: now.Add(-48 * time.Hour)},
+	} {
+		if err := s.RecordEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := s.EffectStats(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Effects["bulge"] != 1 || st.Effects["earrape"] != 1 || st.Effects["fry"] != 1 || len(st.Effects) != 3 {
+		t.Fatalf("effects %v", st.Effects)
+	}
+	if st.Sources[SourceRandom] != 1 || st.Sources[SourcePrompt] != 1 {
+		t.Fatalf("sources %v", st.Sources)
+	}
+	// Pruning old events takes their effect uses along.
+	if _, err := s.PruneEvents(ctx, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := s.EffectStats(ctx, time.Time{}); all.Effects["earrape"] != 1 {
+		t.Fatalf("after prune %v", all.Effects)
 	}
 }

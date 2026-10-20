@@ -19,10 +19,15 @@ type Progress struct {
 	chatID int64
 	msgID  int
 
-	mu     sync.Mutex
-	text   string
-	editAt time.Time
-	closed bool
+	mu      sync.Mutex
+	text    string
+	editAt  time.Time
+	closed  bool
+	started bool // the job left the queue: queue positions no longer apply
+
+	// order serialises the queue and start edits, so that a late "in queue"
+	// can never land after "started".
+	order sync.Mutex
 }
 
 // StartProgress sends the initial status message.
@@ -52,6 +57,48 @@ func (p *Progress) Update(ctx context.Context, text string, markup models.ReplyM
 		ChatID: p.chatID, MessageID: p.msgID, Text: text,
 		ParseMode: models.ParseModeHTML, ReplyMarkup: markup,
 	})
+}
+
+// Set edits the message right away, bypassing the throttle: for stage
+// changes the user must see, such as leaving the queue.
+func (p *Progress) Set(ctx context.Context, text string, markup models.ReplyMarkup) {
+	p.mu.Lock()
+	if p.closed || (text == p.text && markup == nil) {
+		p.mu.Unlock()
+		return
+	}
+	p.text, p.editAt = text, time.Now()
+	p.mu.Unlock()
+	_ = p.c.EditText(ctx, p.chatID, p.msgID, text, markup)
+}
+
+// Queued shows the place in line, unless the job has started meanwhile.
+func (p *Progress) Queued(ctx context.Context, text string, markup models.ReplyMarkup) {
+	p.order.Lock()
+	defer p.order.Unlock()
+	p.mu.Lock()
+	if p.closed || p.started || text == p.text {
+		p.mu.Unlock()
+		return
+	}
+	p.text, p.editAt = text, time.Now()
+	p.mu.Unlock()
+	_ = p.c.EditText(ctx, p.chatID, p.msgID, text, markup)
+}
+
+// Started marks the job as running and shows its first stage right away.
+func (p *Progress) Started(ctx context.Context, text string, markup models.ReplyMarkup) {
+	p.order.Lock()
+	defer p.order.Unlock()
+	p.mu.Lock()
+	p.started = true
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.text, p.editAt = text, time.Now()
+	p.mu.Unlock()
+	_ = p.c.EditText(ctx, p.chatID, p.msgID, text, markup)
 }
 
 // Finish replaces the message with a final text (and no buttons).

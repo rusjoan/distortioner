@@ -1,11 +1,13 @@
 package media
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,4 +58,47 @@ func run(ctx context.Context, env []string, name string, args ...string) ([]byte
 		return nil, &CommandError{Tool: name, Err: err}
 	}
 	return stdout.Bytes(), nil
+}
+
+// runProgress runs ffmpeg like run and reports how far it got: ffmpeg
+// writes its position to stdout (-progress), compared with the expected
+// output length in seconds. onProgress gets permille, at most 999 until
+// ffmpeg exits.
+func runProgress(ctx context.Context, name string, args []string, expected float64, onProgress func(done, total int)) error {
+	if onProgress == nil || expected <= 0 {
+		_, err := run(ctx, nil, name, args...)
+		return err
+	}
+	cmd := exec.CommandContext(ctx, name, append([]string{"-progress", "pipe:1", "-nostats"}, args...)...)
+	setProcessGroup(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return &CommandError{Tool: name, Err: err}
+	}
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		if us, ok := strings.CutPrefix(scanner.Text(), "out_time_us="); ok {
+			if v, err := strconv.ParseInt(us, 10, 64); err == nil && v > 0 {
+				onProgress(min(int(float64(v)/1e6/expected*1000), 999), 1000)
+			}
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > stderrTail {
+			msg = "…" + msg[len(msg)-stderrTail:]
+		}
+		return &CommandError{Tool: name, Err: err, Stderr: msg}
+	}
+	onProgress(1000, 1000)
+	return nil
 }

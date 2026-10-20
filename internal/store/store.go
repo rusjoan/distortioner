@@ -144,6 +144,15 @@ const (
 	StatusRejected = "rejected"
 )
 
+// Event sources: how the user asked for the effects.
+const (
+	SourceCommand = "command" // /wobble, /fry
+	SourceRandom  = "random"  // /distort or the 🎲 button
+	SourcePrompt  = "prompt"  // a button of the "what to do?" question
+	SourcePicker  = "picker"  // effects picked one by one
+	SourceButton  = "button"  // a button under a result
+)
+
 // Event is a single distortion request outcome.
 type Event struct {
 	ChatID   int64
@@ -152,17 +161,70 @@ type Event struct {
 	Status   string
 	Duration time.Duration
 	At       time.Time
+	Source   string
+	Effects  []string // recorded for successful events
 }
 
-// RecordEvent stores one event.
+// RecordEvent stores one event with the effects it applied.
 func (s *Store) RecordEvent(ctx context.Context, e Event) error {
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
-	_, err := s.db.ExecContext(ctx,
-		`insert into events (chat_id, is_group, kind, status, duration_ms, created_at) values (?, ?, ?, ?, ?, ?)`,
-		e.ChatID, e.IsGroup, e.Kind, e.Status, e.Duration.Milliseconds(), e.At.Unix())
-	return err
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`insert into events (chat_id, is_group, kind, status, duration_ms, created_at, source) values (?, ?, ?, ?, ?, ?, ?)`,
+			e.ChatID, e.IsGroup, e.Kind, e.Status, e.Duration.Milliseconds(), e.At.Unix(), e.Source)
+		if err != nil {
+			return err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		for _, effect := range e.Effects {
+			if _, err := tx.ExecContext(ctx, `insert into effect_uses (event_id, effect) values (?, ?)`, id, effect); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// EffectStats counts effect uses and request sources of successful events.
+type EffectStats struct {
+	Effects map[string]int
+	Sources map[string]int
+}
+
+// EffectStats aggregates successful events created at or after since.
+func (s *Store) EffectStats(ctx context.Context, since time.Time) (EffectStats, error) {
+	st := EffectStats{Effects: map[string]int{}, Sources: map[string]int{}}
+	if err := s.countInto(ctx, st.Effects, `
+		select u.effect, count(*) from effect_uses u join events e on e.id = u.event_id
+		where e.created_at >= ? and e.status = 'ok' group by u.effect`, since.Unix()); err != nil {
+		return st, err
+	}
+	err := s.countInto(ctx, st.Sources, `
+		select source, count(*) from events
+		where created_at >= ? and status = 'ok' and source != '' group by source`, since.Unix())
+	return st, err
+}
+
+func (s *Store) countInto(ctx context.Context, m map[string]int, q string, args ...any) error {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return err
+		}
+		m[k] = n
+	}
+	return rows.Err()
 }
 
 // Stats is an aggregate over a period.
@@ -222,7 +284,8 @@ func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error
 
 // ChatSettings are per-chat user preferences.
 type ChatSettings struct {
-	Strength     int
+	Strength     int // wobble
+	FryStrength  int
 	DistortAudio bool
 	Lang         string // empty means "detect from the user"
 }
@@ -230,8 +293,8 @@ type ChatSettings struct {
 // ChatSettings returns stored preferences; ok is false when none are stored.
 func (s *Store) ChatSettings(ctx context.Context, chatID int64) (cs ChatSettings, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx,
-		`select strength, distort_audio, lang from chat_settings where chat_id = ?`, chatID).
-		Scan(&cs.Strength, &cs.DistortAudio, &cs.Lang)
+		`select strength, fry_strength, distort_audio, lang from chat_settings where chat_id = ?`, chatID).
+		Scan(&cs.Strength, &cs.FryStrength, &cs.DistortAudio, &cs.Lang)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cs, false, nil
 	}
@@ -241,10 +304,10 @@ func (s *Store) ChatSettings(ctx context.Context, chatID int64) (cs ChatSettings
 // SaveChatSettings upserts preferences for a chat.
 func (s *Store) SaveChatSettings(ctx context.Context, chatID int64, cs ChatSettings) error {
 	_, err := s.db.ExecContext(ctx, `
-		insert into chat_settings (chat_id, strength, distort_audio, lang) values (?, ?, ?, ?)
-		on conflict (chat_id) do update set strength = excluded.strength,
+		insert into chat_settings (chat_id, strength, fry_strength, distort_audio, lang) values (?, ?, ?, ?, ?)
+		on conflict (chat_id) do update set strength = excluded.strength, fry_strength = excluded.fry_strength,
 			distort_audio = excluded.distort_audio, lang = excluded.lang`,
-		chatID, cs.Strength, cs.DistortAudio, cs.Lang)
+		chatID, cs.Strength, cs.FryStrength, cs.DistortAudio, cs.Lang)
 	return err
 }
 

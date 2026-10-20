@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fry Lab</title>
+<style>
+:root {
+  --bg: #f3f2ef; --panel: #ffffff; --fg: #1d1b19; --muted: #6c6862; --line: #dedad3;
+  --fry: #e2531b; --ok: #2f8a5b; --err: #b8401a;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151412; --panel: #1f1d1a; --fg: #efebe5; --muted: #a29d95; --line: #34312c; --fry: #ff7a3d; --ok: #5cc48f; --err: #ff8a5c; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+.app { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; min-height: 100vh; }
+@media (max-width: 860px) { .app { grid-template-columns: 1fr; } }
+aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; display: grid; gap: 14px; align-content: start; overflow-y: auto; max-height: 100vh; }
+main { padding: 16px; display: grid; gap: 12px; align-content: start; }
+h1 { margin: 0; font-size: 18px; } h1 span { color: var(--fry); }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0; padding: 8px 10px 10px; display: grid; gap: 6px; }
+legend { font-weight: 600; padding: 0 4px; display: flex; gap: 8px; align-items: center; }
+.row { display: grid; grid-template-columns: 96px 1fr 52px; gap: 8px; align-items: center; }
+.row label { color: var(--muted); font-size: 12.5px; }
+.row output { font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--fry); }
+.source { display: grid; gap: 8px; }
+select, button, input[type=file] { font: inherit; }
+select, button { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+button.primary { background: var(--fry); color: #fff; border-color: var(--fry); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--fry); outline-offset: 1px; }
+.videos { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 1100px) { .videos { grid-template-columns: 1fr; } }
+figure { margin: 0; background: #000; border-radius: 8px; overflow: hidden; display: grid; }
+figure video { width: 100%; max-height: 62vh; background: #000; }
+figcaption { background: var(--panel); padding: 6px 10px; font-size: 12.5px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.status { font: 12px var(--mono); color: var(--muted); min-height: 1.4em; }
+.status.err { color: var(--err); white-space: pre-wrap; }
+.status.ok { color: var(--ok); }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+pre { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.5 var(--mono); overflow-x: auto; }
+.hint { color: var(--muted); font-size: 12.5px; margin: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>Fry <span>Lab</span></h1>
+    <div class="source">
+      <select id="file"><option value="">— видео из папки —</option></select>
+      <input type="file" id="upload" accept="video/*">
+      <div class="status" id="info">Выберите видео: оно загрузится в память один раз.</div>
+    </div>
+    <fieldset>
+      <legend>Фрагмент</legend>
+      <div class="row"><label for="start">Начало, с</label><input type="range" id="start" min="0" max="60" step="0.5" value="0"><output for="start"></output></div>
+      <div class="row"><label for="seconds">Длина, с</label><input type="range" id="seconds" min="1" max="15" step="0.5" value="5"><output for="seconds"></output></div>
+    </fieldset>
+    <fieldset>
+      <legend>Пресет силы</legend>
+      <div class="row"><label for="strength">Сила (как /fry N)</label><input type="range" id="strength" min="20" max="80" step="5" value="50"><output for="strength"></output></div>
+      <p class="hint">Сбрасывает все ручки к значениям бота для этой силы.</p>
+      <button id="zero">Всё в ноль</button>
+      <p class="hint">Каждая ручка — величина искажения: в нуле её часть выключена. Нормализация выключена в 0, включена при любом отрицательном значении. * Частота баса — настройка, действует только при ненулевом басе.</p>
+    </fieldset>
+    <div id="knobs"></div>
+  </aside>
+  <main>
+    <div class="bar">
+      <button class="primary" id="play">▶ Синхронно</button>
+      <button id="copy">Скопировать как Go</button>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="videos">
+      <figure><video id="orig" controls playsinline muted></video><figcaption><span>Оригинал (без звука)</span></figcaption></figure>
+      <figure><video id="out" controls playsinline></video><figcaption><span>Fry</span><span id="took"></span></figcaption></figure>
+    </div>
+    <pre id="code"></pre>
+  </main>
+</div>
+<script>
+// Every knob is an amount of distortion: 0 means that part is off.
+const knobs = [
+  { group: "Картинка", toggle: "picture", items: [
+    ["saturation", "Насыщенность +", 0, 5, 0.1],
+    ["contrast", "Контраст +", 0, 2, 0.05],
+    ["brightness", "Яркость ±", -0.3, 0.3, 0.01],
+    ["gammaR", "Красный +", 0, 1.5, 0.05],
+    ["sharpen", "Резкость", 0, 5, 0.1],
+    ["noise", "Шум", 0, 100, 1],
+    ["shrink", "Шакал", 0, 7, 0.5],
+  ]},
+  { group: "Тряска", items: [["shake", "Амплитуда", 0, 0.4, 0.005]] },
+  { group: "Звук (earrape)", toggle: "sound", items: [
+    ["highPass", "Срез низа, Гц", 0, 150, 5],
+    ["bass", "Бас, дБ", 0, 48, 1],
+    ["bassFreq", "Частота баса, Гц *", 40, 200, 5],
+    ["treble", "Верха, дБ", 0, 20, 1],
+    ["loudness", "Нормализация, LUFS", -30, 0, 1],
+    ["gain", "Усиление, дБ", 0, 40, 0.5],
+    ["clip", "Клип", 0, 0.9, 0.01],
+    ["crush", "Дробление", 0, 15, 1],
+    ["finalGain", "До 2-го клипа, дБ", 0, 12, 0.5],
+  ]},
+  { group: "Кодирование", items: [["crf", "CRF (0 ≈ без потерь)", 0, 51, 1]] },
+];
+const $ = id => document.getElementById(id);
+const state = { name: "", params: {}, crf: 34, picture: true, sound: true };
+
+function addRow(parent, [key, label, min, max, step]) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<label for="k-${key}">${label}</label><input type="range" id="k-${key}" min="${min}" max="${max}" step="${step}"><output></output>`;
+  const input = row.querySelector("input");
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    if (key === "crf") state.crf = v; else state.params[key] = v;
+    row.querySelector("output").textContent = input.value;
+    schedule();
+  });
+  parent.appendChild(row);
+}
+for (const g of knobs) {
+  const fs = document.createElement("fieldset");
+  const legend = document.createElement("legend");
+  legend.textContent = g.group;
+  if (g.toggle) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = true; cb.id = "t-" + g.toggle;
+    cb.addEventListener("change", () => { state[g.toggle] = cb.checked; schedule(); });
+    legend.prepend(cb);
+  }
+  fs.appendChild(legend);
+  g.items.forEach(it => addRow(fs, it));
+  $("knobs").appendChild(fs);
+}
+function syncInputs() {
+  for (const g of knobs) for (const [key] of g.items) {
+    const input = $("k-" + key);
+    input.value = key === "crf" ? state.crf : state.params[key];
+    input.parentElement.querySelector("output").textContent = input.value;
+  }
+  renderCode();
+}
+for (const id of ["start", "seconds", "strength"]) {
+  const el = $(id);
+  const out = el.parentElement.querySelector("output");
+  out.textContent = el.value;
+  el.addEventListener("input", () => {
+    out.textContent = el.value;
+    if (id === "strength") loadDefaults(); else { syncOriginal(); schedule(); }
+  });
+}
+
+async function loadDefaults() {
+  const r = await fetch("/api/defaults?strength=" + $("strength").value);
+  state.params = await r.json();
+  state.crf = 34; // what the bot encodes fried video with
+  syncInputs();
+  schedule();
+}
+
+function renderCode() {
+  const p = state.params;
+  const keys = Object.keys(p);
+  const go = "media.FryParams{\n" + keys.map(k => `\t${k[0].toUpperCase() + k.slice(1)}: ${p[k]},`).join("\n") + "\n}";
+  $("code").textContent = go;
+}
+
+let timer, ctrl, outURL;
+function schedule() {
+  renderCode();
+  clearTimeout(timer);
+  timer = setTimeout(render, 350);
+}
+async function render() {
+  if (!state.name) return;
+  if (ctrl) ctrl.abort();
+  ctrl = new AbortController();
+  const status = $("status");
+  status.className = "status"; status.textContent = "рендер…";
+  const body = { name: state.name, start: +$("start").value, seconds: +$("seconds").value, crf: state.crf,
+    params: state.params, picture: state.picture, sound: state.sound };
+  try {
+    const r = await fetch("/api/render", { method: "POST", body: JSON.stringify(body), signal: ctrl.signal });
+    if (!r.ok) { status.className = "status err"; status.textContent = await r.text(); return; }
+    const blob = await r.blob();
+    if (outURL) URL.revokeObjectURL(outURL);
+    outURL = URL.createObjectURL(blob);
+    const out = $("out");
+    out.src = outURL;
+    out.play().catch(() => {});
+    $("took").textContent = `${r.headers.get("X-Render-Ms")} мс · ${(blob.size / 1024).toFixed(0)} КБ`;
+    status.className = "status ok"; status.textContent = "готово";
+  } catch (e) {
+    if (e.name !== "AbortError") { status.className = "status err"; status.textContent = String(e); }
+  }
+}
+
+function syncOriginal() {
+  if (!state.name) return;
+  const o = $("orig");
+  const start = +$("start").value;
+  o.src = `/src/${encodeURIComponent(state.name)}#t=${start},${start + +$("seconds").value}`;
+}
+$("play").addEventListener("click", () => {
+  const o = $("orig"), f = $("out");
+  o.currentTime = +$("start").value; f.currentTime = 0;
+  o.play().catch(() => {}); f.play().catch(() => {});
+});
+$("zero").addEventListener("click", () => {
+  for (const g of knobs) for (const [key] of g.items) {
+    if (key === "crf") state.crf = 0;
+    else if (key !== "bassFreq") state.params[key] = 0;
+  }
+  syncInputs();
+  schedule();
+});
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("code").textContent); $("status").textContent = "скопировано"; }
+  catch { const sel = getSelection(); sel.selectAllChildren($("code")); }
+});
+
+async function loaded(r) {
+  const info = $("info");
+  if (!r.ok) { info.className = "status err"; info.textContent = await r.text(); return; }
+  const v = await r.json();
+  state.name = v.name;
+  info.className = "status ok";
+  info.textContent = `${v.name}: ${v.width}×${v.height}, ${v.duration.toFixed(1)} с, ${(v.size / 1048576).toFixed(1)} МБ${v.audio ? "" : ", без звука"}`;
+  $("start").max = Math.max(0, Math.floor(v.duration - 1));
+  syncOriginal();
+  render();
+}
+$("file").addEventListener("change", async e => {
+  if (!e.target.value) return;
+  $("info").textContent = "загружаю в память…";
+  loaded(await fetch("/api/load?name=" + encodeURIComponent(e.target.value), { method: "POST" }));
+});
+$("upload").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  $("info").textContent = "загружаю в память…";
+  loaded(await fetch("/api/upload", { method: "POST", body: fd }));
+});
+
+(async () => {
+  const names = await (await fetch("/api/files")).json();
+  for (const n of names || []) {
+    const o = document.createElement("option"); o.value = n; o.textContent = n; $("file").appendChild(o);
+  }
+  await loadDefaults();
+})();
+</script>
+</body>
+</html>

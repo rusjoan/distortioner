@@ -33,8 +33,12 @@ func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
 		}
 	case strings.HasPrefix(data, "c:"):
 		b.onCancel(ctx, cq)
+	case strings.HasPrefix(data, "x:"):
+		b.onChoice(ctx, cq)
+	case strings.HasPrefix(data, "p:"):
+		b.onPicker(ctx, cq)
 	case strings.HasPrefix(data, "r:"), data == "f":
-		b.onMore(ctx, cq)
+		b.onMore(ctx, cq) // buttons on results sent before the choice buttons existed
 	case strings.HasPrefix(data, "s:"):
 		b.onSettings(ctx, cq)
 	default:
@@ -81,11 +85,13 @@ func (b *Bot) onMore(ctx context.Context, cq *models.CallbackQuery) {
 		return
 	}
 	r := b.newRequest(ctx, msg, &cq.From, msg.ID)
+	r.via = store.SourceButton
+	r.mode = ModeWobble
 	if cq.Data == "f" {
-		r.effect = EffectFry
+		r.mode = ModeFry
 	} else if n, err := strconv.Atoi(strings.TrimPrefix(cq.Data, "r:")); err == nil &&
 		n >= settings.MinStrength && n <= settings.MaxStrength {
-		r.strength = media.Strength(n)
+		r.wobble = media.Strength(n)
 	}
 	b.process(ctx, r)
 }
@@ -116,9 +122,16 @@ func (b *Bot) onSettings(ctx context.Context, cq *models.CallbackQuery) {
 	prefs := r.prefs
 	parts := strings.Split(cq.Data, ":")
 	switch {
-	case len(parts) == 3 && parts[1] == "str":
+	case len(parts) == 2 && parts[1] == "-":
+		b.TG.Answer(ctx, cq.ID, "", false) // a row title
+		return
+	case len(parts) == 3 && (parts[1] == "str" || parts[1] == "fry"):
 		if n, err := strconv.Atoi(parts[2]); err == nil && n >= settings.MinStrength && n <= settings.MaxStrength {
-			prefs.Strength = n
+			if parts[1] == "fry" {
+				prefs.FryStrength = n
+			} else {
+				prefs.Strength = n
+			}
 		}
 	case len(parts) == 2 && parts[1] == "audio":
 		prefs.DistortAudio = !prefs.DistortAudio
@@ -152,22 +165,31 @@ func settingsView(lang i18n.Lang, p store.ChatSettings) (string, models.ReplyMar
 	if _, ok := i18n.Parse(p.Lang); !ok {
 		langName += " (auto)"
 	}
-	text := i18n.T(lang, "settings.title", p.Strength, audio, langName)
+	text := i18n.T(lang, "settings.title", p.Strength, p.FryStrength, audio, langName)
 
-	var strengths []models.InlineKeyboardButton
-	for _, n := range strengthChoices {
-		label := strconv.Itoa(n)
-		if n == p.Strength {
-			label = "• " + label
+	strengthRow := func(key string, current int) []models.InlineKeyboardButton {
+		var row []models.InlineKeyboardButton
+		for _, n := range strengthChoices {
+			label := strconv.Itoa(n)
+			if n == current {
+				label = "• " + label
+			}
+			row = append(row, models.InlineKeyboardButton{Text: label, CallbackData: fmt.Sprintf("s:%s:%d", key, n)})
 		}
-		strengths = append(strengths, models.InlineKeyboardButton{Text: label, CallbackData: fmt.Sprintf("s:str:%d", n)})
+		return row
+	}
+	title := func(key string) []models.InlineKeyboardButton {
+		return []models.InlineKeyboardButton{{Text: "— " + i18n.T(lang, key) + " —", CallbackData: "s:-"}}
 	}
 	var langs []models.InlineKeyboardButton
 	for _, l := range i18n.Langs {
 		langs = append(langs, models.InlineKeyboardButton{Text: i18n.T(l, "lang.name"), CallbackData: "s:lang:" + string(l)})
 	}
 	return text, &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		strengths,
+		title("settings.strength"),
+		strengthRow("str", p.Strength),
+		title("settings.fry"),
+		strengthRow("fry", p.FryStrength),
 		{{Text: i18n.T(lang, "settings.audio", audio), CallbackData: "s:audio"}},
 		langs,
 	}}

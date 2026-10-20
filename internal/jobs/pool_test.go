@@ -362,3 +362,69 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// The estimate scales with the size of each job, not with how many jobs
+// there are: a long video ahead weighs more than a short one.
+func TestEstimateIsNormalisedByCost(t *testing.T) {
+	p := New(1, 0, Limits{})
+	defer p.Shutdown(context.Background())
+	g := newGate()
+	running := g.job(0)
+	running.Cost = 10
+	mustSubmit(t, p, running)
+	<-g.started
+	defer close(g.release)
+
+	p.mu.Lock()
+	p.rate = 1 // a second of work per second of media
+	p.mu.Unlock()
+
+	long := mustSubmit(t, p, &Job{ChatID: 1, Cost: 20, Run: noop, Done: func(error) {}})
+	short := mustSubmit(t, p, &Job{ChatID: 2, Cost: 5, Run: noop, Done: func(error) {}})
+
+	near := func(got, want time.Duration) bool { return got > want-time.Second && got <= want }
+	if _, eta, _ := p.Position(long); !near(eta, 30*time.Second) { // 10 left running + 20 own
+		t.Errorf("long: %v", eta)
+	}
+	if _, eta, _ := p.Position(short); !near(eta, 35*time.Second) { // 10 + 20 ahead + 5 own
+		t.Errorf("short: %v", eta)
+	}
+}
+
+func TestEstimateSharesWorkBetweenWorkers(t *testing.T) {
+	p := New(2, 0, Limits{})
+	defer p.Shutdown(context.Background())
+	g1, g2 := newGate(), newGate()
+	mustSubmit(t, p, g1.job(0))
+	mustSubmit(t, p, g2.job(0))
+	<-g1.started
+	<-g2.started
+	defer close(g1.release)
+	defer close(g2.release)
+
+	p.mu.Lock()
+	p.rate = 1
+	p.mu.Unlock()
+	a := mustSubmit(t, p, &Job{ChatID: 1, Cost: 10, Run: noop, Done: func(error) {}})
+	b := mustSubmit(t, p, &Job{ChatID: 2, Cost: 10, Run: noop, Done: func(error) {}})
+	// Running gates cost 1 each: (1 + 1 + 10) / 2 workers + 10 own = 16 s.
+	if _, eta, _ := p.Position(b); eta <= 15*time.Second || eta > 16*time.Second {
+		t.Errorf("b: %v", eta)
+	}
+	if _, eta, _ := p.Position(a); eta <= 10*time.Second || eta > 11*time.Second {
+		t.Errorf("a: %v", eta)
+	}
+}
+
+func TestNoEstimateBeforeAnyJobFinished(t *testing.T) {
+	p := New(1, 0, Limits{})
+	defer p.Shutdown(context.Background())
+	g := newGate()
+	mustSubmit(t, p, g.job(0))
+	<-g.started
+	defer close(g.release)
+	id := mustSubmit(t, p, &Job{ChatID: 1, Cost: 30, Run: noop, Done: func(error) {}})
+	if pos, eta, ok := p.Position(id); !ok || pos != 1 || eta != 0 {
+		t.Fatalf("pos %d eta %v ok %v", pos, eta, ok)
+	}
+}

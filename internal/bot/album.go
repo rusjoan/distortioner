@@ -57,8 +57,9 @@ func (c *albumCollector) fire(groupID string) {
 	c.flush(ctx, g.parts)
 }
 
-// processAlbum distorts the photos and videos of an album as one job and
-// replies with an album. Anything else in it is processed on its own.
+// processAlbum applies the request's mode to the photos and videos of an
+// album as one job and replies with an album. Anything else in it is
+// processed on its own.
 func (b *Bot) processAlbum(ctx context.Context, parts []request) {
 	var items []item
 	var first *request

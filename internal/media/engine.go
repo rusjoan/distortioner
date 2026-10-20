@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -83,28 +82,14 @@ func (e *Engine) acquire(ctx context.Context) error {
 
 func (e *Engine) release() { <-e.cpu }
 
-// DistortImage distorts a still image. The output format follows out's
-// extension. Stickers are fitted into 512×512 as Telegram requires.
+// DistortImage applies wobble to a still image. Stickers are fitted into
+// 512×512 as Telegram requires.
 func (e *Engine) DistortImage(ctx context.Context, in, out string, strength Strength, sticker bool) error {
-	if err := e.acquire(ctx); err != nil {
-		return err
-	}
-	defer e.release()
-
-	keep := strength.keep()
-	args := []string{
-		in + "[0]", // first frame only, in case of animated webp/gif
-		"-auto-orient",
-		"-resize", "512x512>",
-		"-liquid-rescale", fmt.Sprintf("%d%%", keep),
-		"-resize", fmt.Sprintf("%.4f%%", 100*100/float64(keep)),
-	}
+	kind := MediaPhoto
 	if sticker {
-		args = append(args, "-resize", "512x512")
+		kind = MediaSticker
 	}
-	args = append(args, out)
-	_, err := run(ctx, e.magickEn, e.Magick, args...)
-	return err
+	return e.Apply(ctx, in, out, Recipe{{ID: "wobble", Strength: strength}}, ApplyOptions{Kind: kind})
 }
 
 // vibrato builds the audio filter; stronger distortion means deeper vibrato.
@@ -113,16 +98,9 @@ func vibrato(strength Strength) string {
 	return fmt.Sprintf("vibrato=f=6:d=%.2f", depth)
 }
 
-// DistortAudio applies vibrato. The codec follows out's extension:
-// .ogg gives Opus (voice messages), anything else AAC.
+// DistortAudio applies wobble's vibrato; .ogg output is Opus.
 func (e *Engine) DistortAudio(ctx context.Context, in, out string, strength Strength) error {
-	codec := []string{"-c:a", "aac", "-b:a", "128k"}
-	if strings.EqualFold(filepath.Ext(out), ".ogg") {
-		codec = []string{"-c:a", "libopus", "-b:a", "64k"}
-	}
-	args := append([]string{"-nostdin", "-y", "-i", in, "-vn", "-map", "0:a:0", "-af", vibrato(strength)}, codec...)
-	_, err := run(ctx, nil, e.FFmpeg, append(args, out)...)
-	return err
+	return e.Apply(ctx, in, out, Recipe{{ID: "wobble", Strength: strength}}, ApplyOptions{Kind: soundKind(out)})
 }
 
 // DistortText alternates letter case: "hello" → "hElLo".

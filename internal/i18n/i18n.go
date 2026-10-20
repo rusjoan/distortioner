@@ -57,22 +57,30 @@ var messages = map[Lang]map[string]string{
 	EN: {
 		"lang.name": "🇬🇧 English",
 
-		"start": "Send me a picture, sticker, GIF, video, video note, voice message or just text, and I'll distort it.\n\n" +
-			"In groups, reply to a message with /distort. Add a number for strength: <code>/distort 70</code>.\n\n" +
+		"start": "Send me a picture, sticker, GIF, video, video note or voice message, and I'll ask what to do with it. Text gets mOcKeD right away.\n\n" +
+			"/distort — random effects · /wobble — the classic distortion · /fry — deep fry · /fx — the menu.\n" +
+			"In groups, reply to a message with one of these commands.\n\n" +
 			"/settings — strength, sound and language.",
-		"help": "<b>What I can distort</b>\nphotos, stickers (static and video), GIFs, videos, video notes, voice messages, " +
+		"help": "<b>What I can process</b>\nphotos, stickers (static and video), GIFs, videos, video notes, voice messages, " +
 			"audio files, pictures and videos sent as files, albums and text.\n\n" +
-			"<b>Groups</b>: reply with /distort to the message. Strength from %d to %d: <code>/distort 70</code>.\n" +
-			"Under each result there is a <b>🔁 More</b> button: it distorts the result once again.\n" +
-			"<b>/fry</b> deep-fries instead: burnt colours, a shaking frame and earrape sound.\n\n" +
-			"Limits: up to %d MB, videos up to %d s.",
+			"<b>Commands</b> (as a reply or as the caption of the media):\n" +
+			"/distort — a random mix of effects\n" +
+			"/wobble — the classic seam-carving distortion, strength %[1]d…%[2]d: <code>/wobble 70</code>\n" +
+			"/fry — deep fry: burnt colours, shaking and earrape, strength %[1]d…%[2]d: <code>/fry 70</code>\n" +
+			"/fx — the menu of effects, the same as in a private chat\n\n" +
+			"In a private chat just send the media: I'll ask what to do, and <b>✨ Pick</b> lets you choose effects one by one. " +
+			"The same buttons are under every result, so effects can be chained.\n\n" +
+			"Limits: up to %[3]d MB, videos up to %[4]d s.",
 
-		"progress.downloading": "⏬ Downloading…",
-		"progress.queued":      "⏳ In queue: #%d",
-		"progress.queued_eta":  "⏳ In queue: #%d, about %s",
-		"progress.extracting":  "🎞 Extracting frames…",
-		"progress.distorting":  "🌀 Distorting frames…\n<code>%s</code> %d%%",
-		"progress.encoding":    "📼 Encoding…",
+		"progress.downloading":  "⏬ Downloading…",
+		"progress.queued":       "⏳ In queue: #%d",
+		"progress.queued_eta":   "⏳ In queue: #%d, about %s",
+		"progress.extracting":   "🎞 Extracting frames…",
+		"progress.distorting":   "🌀 Distorting frames…\n<code>%s</code> %d%%",
+		"progress.encoding":     "📼 Encoding…",
+		"progress.uploading":    "⏫ Uploading…",
+		"progress.encoding_pct": "📼 Encoding…\n<code>%s</code> %d%%",
+		"progress.processing":   "⚙️ Processing…\n<code>%s</code> %d%%",
 
 		"err.failed":        "😵 Failed to distort this one.",
 		"err.too_big":       "Senpai, it's too big… (max %d MB)",
@@ -92,17 +100,58 @@ var messages = map[Lang]map[string]string{
 		"err.strength":      "Strength must be between %d and %d.",
 		"err.admins_only":   "Only chat admins can change settings here.",
 		"err.not_yours":     "Only the person who sent it can cancel this.",
-		"err.fry_text":      "Text can't be fried. Send a picture, a video or a voice message.",
 
 		"dur.sec": "%d s",
 		"dur.min": "%d min %d s",
 
-		"btn.more":     "🔁 More",
-		"btn.fry_more": "🔥 More",
-		"btn.cancel":   "❌ Cancel",
+		"btn.cancel":        "❌ Cancel",
+		"ask.what":          "What should I do with it?",
+		"ask.pick":          "Pick effects and tap Apply:",
+		"btn.random":        "🎲 Random",
+		"btn.random_again":  "🎲 Random again",
+		"btn.wobble":        "🌀 Wobble",
+		"btn.fry":           "🔥 Fry",
+		"btn.pick":          "✨ Pick",
+		"err.expired":       "This is too old, send the media again.",
+		"picker.presets":    "presets",
+		"picker.picture":    "picture",
+		"picker.time":       "time",
+		"picker.sound":      "sound",
+		"picker.apply":      "▶️ Apply (%d)",
+		"picker.close":      "✖️",
+		"picker.empty":      "Pick at least one effect.",
+		"fx.wobble":         "🌀 Wobble",
+		"fx.fry":            "🔥 Fry",
+		"fx.bulge":          "🫧 Bulge",
+		"fx.swirl":          "🌪 Swirl",
+		"fx.pixel":          "🟪 Pixels",
+		"fx.rainbow":        "🌈 Rainbow",
+		"fx.mirror":         "🪞 Mirror",
+		"fx.trails":         "👻 Trails",
+		"fx.drunk":          "🥴 Drunk",
+		"fx.shake":          "📳 Shake",
+		"fx.reverse":        "⏪ Reverse",
+		"fx.fast":           "⏩ ×2",
+		"fx.slow":           "🐌 ×0.5",
+		"fx.chipmunk":       "🐿 Chipmunk",
+		"fx.demon":          "😈 Demon",
+		"fx.earrape":        "🔊 Earrape",
+		"fx.echo":           "🗣 Echo",
+		"fx.demotivator":    "🖼 Demotivator",
+		"fx.mock":           "🧽 пРиВеТ",
+		"fx.baby":           "👶 Baby talk",
+		"fx.typos":          "🍺 Drunk typing",
+		"fx.caps":           "📢 CAPS!!1",
+		"fx.spaced":         "↔️ S p a c e d",
+		"fx.emoji":          "😂 Emoji pasta",
+		"picker.text":       "text",
+		"settings.fry":      "Fry strength",
+		"admin.effects":     "<b>Effects</b>",
+		"admin.effect_line": "%s: %d (%d%%)",
+		"admin.sources":     "Asked via: commands %d · random %d · question %d · picker %d · buttons %d",
 
-		"settings.title":    "<b>Settings for this chat</b>\nStrength: <b>%d%%</b>\nDistort sound in videos: <b>%s</b>\nLanguage: %s",
-		"settings.strength": "Strength",
+		"settings.title":    "<b>Settings for this chat</b>\nWobble strength: <b>%d%%</b>\nFry strength: <b>%d%%</b>\nWobble distorts sound in videos: <b>%s</b>\nLanguage: %s",
+		"settings.strength": "Wobble strength",
 		"settings.audio":    "🔊 Sound: %s",
 		"on":                "on",
 		"off":               "off",
@@ -173,22 +222,30 @@ var messages = map[Lang]map[string]string{
 	RU: {
 		"lang.name": "🇷🇺 Русский",
 
-		"start": "Пришли картинку, стикер, гифку, видео, кружок, голосовое или просто текст — я их искажу.\n\n" +
-			"В группах ответь на сообщение командой /distort. Сила задаётся числом: <code>/distort 70</code>.\n\n" +
+		"start": "Пришли картинку, стикер, гифку, видео, кружок или голосовое — я спрошу, что с ним сделать. Текст сразу превращается в «пРиВеТ».\n\n" +
+			"/distort — случайные эффекты · /wobble — классическое искажение · /fry — прожарка · /fx — меню.\n" +
+			"В группах отвечай одной из этих команд на сообщение.\n\n" +
 			"/settings — сила, звук и язык.",
-		"help": "<b>Что я умею искажать</b>\nфото, стикеры (обычные и видео), гифки, видео, кружки, голосовые, " +
+		"help": "<b>Что я умею обрабатывать</b>\nфото, стикеры (обычные и видео), гифки, видео, кружки, голосовые, " +
 			"аудиофайлы, картинки и видео файлом, альбомы и текст.\n\n" +
-			"<b>Группы</b>: ответь командой /distort на сообщение. Сила от %d до %d: <code>/distort 70</code>.\n" +
-			"Под каждым результатом есть кнопка <b>🔁 Ещё</b> — она искажает результат повторно.\n" +
-			"<b>/fry</b> — прожарка: выжженные цвета, тряска и earrape на звук.\n\n" +
-			"Лимиты: до %d МБ, видео до %d с.",
+			"<b>Команды</b> (ответом на сообщение или в подписи к медиа):\n" +
+			"/distort — случайный набор эффектов\n" +
+			"/wobble — классическое искажение, сила от %[1]d до %[2]d: <code>/wobble 70</code>\n" +
+			"/fry — прожарка: выжженные цвета, тряска и earrape, сила от %[1]d до %[2]d: <code>/fry 70</code>\n" +
+			"/fx — меню эффектов, как в личке\n\n" +
+			"В личке просто пришли медиа: я спрошу, что сделать, а <b>✨ Выбрать</b> даст собрать эффекты по одному. " +
+			"Те же кнопки есть под каждым результатом, так что эффекты можно применять цепочкой.\n\n" +
+			"Лимиты: до %[3]d МБ, видео до %[4]d с.",
 
-		"progress.downloading": "⏬ Скачиваю…",
-		"progress.queued":      "⏳ В очереди: #%d",
-		"progress.queued_eta":  "⏳ В очереди: #%d, примерно %s",
-		"progress.extracting":  "🎞 Достаю кадры…",
-		"progress.distorting":  "🌀 Искажаю кадры…\n<code>%s</code> %d%%",
-		"progress.encoding":    "📼 Собираю видео…",
+		"progress.downloading":  "⏬ Скачиваю…",
+		"progress.queued":       "⏳ В очереди: #%d",
+		"progress.queued_eta":   "⏳ В очереди: #%d, примерно %s",
+		"progress.extracting":   "🎞 Достаю кадры…",
+		"progress.distorting":   "🌀 Искажаю кадры…\n<code>%s</code> %d%%",
+		"progress.encoding":     "📼 Собираю видео…",
+		"progress.uploading":    "⏫ Отправляю…",
+		"progress.encoding_pct": "📼 Собираю видео…\n<code>%s</code> %d%%",
+		"progress.processing":   "⚙️ Обрабатываю…\n<code>%s</code> %d%%",
 
 		"err.failed":        "😵 Не получилось это исказить.",
 		"err.too_big":       "Семпай, он слишком большой… (максимум %d МБ)",
@@ -208,17 +265,58 @@ var messages = map[Lang]map[string]string{
 		"err.strength":      "Сила должна быть от %d до %d.",
 		"err.admins_only":   "Менять настройки здесь могут только админы чата.",
 		"err.not_yours":     "Отменить может только тот, кто это прислал.",
-		"err.fry_text":      "Текст не прожарить. Пришли картинку, видео или голосовое.",
 
 		"dur.sec": "%d с",
 		"dur.min": "%d мин %d с",
 
-		"btn.more":     "🔁 Ещё",
-		"btn.fry_more": "🔥 Ещё",
-		"btn.cancel":   "❌ Отмена",
+		"btn.cancel":        "❌ Отмена",
+		"ask.what":          "Что с этим сделать?",
+		"ask.pick":          "Выбери эффекты и нажми «Применить»:",
+		"btn.random":        "🎲 Случайно",
+		"btn.random_again":  "🎲 Ещё случайно",
+		"btn.wobble":        "🌀 Wobble",
+		"btn.fry":           "🔥 Прожарка",
+		"btn.pick":          "✨ Выбрать",
+		"err.expired":       "Это уже устарело, пришли медиа ещё раз.",
+		"picker.presets":    "пресеты",
+		"picker.picture":    "картинка",
+		"picker.time":       "время",
+		"picker.sound":      "звук",
+		"picker.apply":      "▶️ Применить (%d)",
+		"picker.close":      "✖️",
+		"picker.empty":      "Выбери хотя бы один эффект.",
+		"fx.wobble":         "🌀 Wobble",
+		"fx.fry":            "🔥 Прожарка",
+		"fx.bulge":          "🫧 Раздуть",
+		"fx.swirl":          "🌪 Водоворот",
+		"fx.pixel":          "🟪 Пиксели",
+		"fx.rainbow":        "🌈 Радуга",
+		"fx.mirror":         "🪞 Зеркало",
+		"fx.trails":         "👻 Шлейфы",
+		"fx.drunk":          "🥴 Пьяный",
+		"fx.shake":          "📳 Тряска",
+		"fx.reverse":        "⏪ Реверс",
+		"fx.fast":           "⏩ ×2",
+		"fx.slow":           "🐌 ×0,5",
+		"fx.chipmunk":       "🐿 Бурундук",
+		"fx.demon":          "😈 Демон",
+		"fx.earrape":        "🔊 Earrape",
+		"fx.echo":           "🗣 Эхо",
+		"fx.demotivator":    "🖼 Демотиватор",
+		"fx.mock":           "🧽 пРиВеТ",
+		"fx.baby":           "👶 Лепет",
+		"fx.typos":          "🍺 Пьяная печать",
+		"fx.caps":           "📢 КАПС!!1",
+		"fx.spaced":         "↔️ Р а з р я д к а",
+		"fx.emoji":          "😂 Эмодзи-паста",
+		"picker.text":       "текст",
+		"settings.fry":      "Сила прожарки",
+		"admin.effects":     "<b>Эффекты</b>",
+		"admin.effect_line": "%s: %d (%d%%)",
+		"admin.sources":     "Как просили: командой %d · случайно %d · из вопроса %d · выбором %d · кнопками %d",
 
-		"settings.title":    "<b>Настройки этого чата</b>\nСила: <b>%d%%</b>\nИскажать звук в видео: <b>%s</b>\nЯзык: %s",
-		"settings.strength": "Сила",
+		"settings.title":    "<b>Настройки этого чата</b>\nСила wobble: <b>%d%%</b>\nСила прожарки: <b>%d%%</b>\nWobble искажает звук в видео: <b>%s</b>\nЯзык: %s",
+		"settings.strength": "Сила wobble",
 		"settings.audio":    "🔊 Звук: %s",
 		"on":                "вкл",
 		"off":               "выкл",

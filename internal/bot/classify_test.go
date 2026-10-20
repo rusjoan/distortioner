@@ -1,9 +1,12 @@
 package bot
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-telegram/bot/models"
+
+	"github.com/graynk/distortioner/internal/media"
 )
 
 func TestClassify(t *testing.T) {
@@ -68,6 +71,26 @@ func TestExtOr(t *testing.T) {
 	for name, want := range map[string]string{"a.MP4": ".mp4", "noext": ".x", "weird.!!": ".x", "long.abcdefgh": ".x", "": ".x"} {
 		if got := extOr(name, ".x"); got != want {
 			t.Errorf("extOr(%q) = %q", name, got)
+		}
+	}
+}
+
+func TestResultName(t *testing.T) {
+	cases := []struct {
+		it     item
+		recipe media.Recipe
+		want   string
+	}{
+		{item{kind: KindVoice}, media.Recipe{{ID: "fry"}}, "voice_fry"},
+		{item{kind: KindPhoto}, media.Recipe{{ID: "rainbow"}, {ID: "bulge"}}, "photo_bulge+rainbow"},
+		{item{kind: KindAudio, name: "My Song (live).mp3"}, media.Recipe{{ID: "wobble"}}, "My_Song_live_wobble"},
+		{item{kind: KindAudio, name: "моя песня.mp3"}, media.Recipe{{ID: "echo"}}, "моя_песня_echo"},
+		{item{kind: KindImageFile, name: "...png"}, media.Recipe{{ID: "pixel"}}, "image_pixel"},
+		{item{kind: KindVideoFile, name: strings.Repeat("a", 50) + ".mov"}, media.Recipe{{ID: "fry"}}, strings.Repeat("a", 32) + "_fry"},
+	}
+	for _, c := range cases {
+		if got := resultName(c.it, c.recipe); got != c.want {
+			t.Errorf("resultName(%+v) = %q, want %q", c.it, got, c.want)
 		}
 	}
 }

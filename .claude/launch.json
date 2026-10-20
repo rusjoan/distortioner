@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frylab",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./cmd/frylab", "-dir", "testfiles"],
+      "port": 8096
+    }
+  ]
+}

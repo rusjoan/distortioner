@@ -15,6 +15,7 @@ type Metrics struct {
 	reg      *prometheus.Registry
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec
+	effects  *prometheus.CounterVec
 }
 
 // New registers the bot's metrics plus Go runtime and process collectors.
@@ -30,8 +31,12 @@ func New() *Metrics {
 			Help:    "Time spent processing successful jobs.",
 			Buckets: []float64{0.5, 1, 2, 5, 10, 20, 40, 60, 120, 300},
 		}, []string{"kind"}),
+		effects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "distortioner_effects_total",
+			Help: "Effects applied in successful requests.",
+		}, []string{"effect"}),
 	}
-	m.reg.MustRegister(m.requests, m.duration,
+	m.reg.MustRegister(m.requests, m.duration, m.effects,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
@@ -45,6 +50,11 @@ func (m *Metrics) Request(kind, status string) {
 // Duration observes how long a successful job took.
 func (m *Metrics) Duration(kind string, d time.Duration) {
 	m.duration.WithLabelValues(kind).Observe(d.Seconds())
+}
+
+// Effect counts one applied effect.
+func (m *Metrics) Effect(id string) {
+	m.effects.WithLabelValues(id).Inc()
 }
 
 // Gauge registers a gauge computed on scrape.
