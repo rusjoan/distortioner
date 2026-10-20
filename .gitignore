@@ -1,3 +1,8 @@
-.idea/
-distortioner
-distortioner.dev.env
+/.idea/
+/.vscode/
+/bin/
+/data/
+/dist/
+*.env
+!.env.example
+coverage.out
