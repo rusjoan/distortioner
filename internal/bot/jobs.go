@@ -622,13 +622,17 @@ func (b *Bot) demotivatorText(caption string, lang i18n.Lang) media.Demotivator 
 // maxCaption leaves room for the effects line within Telegram's 1024.
 const maxCaption = 960
 
-// captionText rewrites the caption of a result: the picked text effects,
-// or the classic mocking case.
+// captionText rewrites the caption of a result: the picked text effects;
+// with nothing picked in the picker it is kept as is, otherwise it gets
+// the classic mocking case.
 func (b *Bot) captionText(r request, caption string) string {
 	if caption == "" {
 		return ""
 	}
 	if len(r.caption) == 0 {
+		if r.mode == ModeRecipe {
+			return caption
+		}
 		return media.DistortText(caption)
 	}
 	b.rndMu.Lock()

@@ -18,7 +18,7 @@ type TextEffect struct {
 
 // TextCatalog lists the text effects in display order.
 var TextCatalog = []TextEffect{
-	{ID: "mock", Emoji: "🧽", order: 30, cased: true, apply: func(_ *rand.Rand, s string) string { return DistortText(s) }},
+	{ID: "mock", Emoji: "〰️", order: 30, cased: true, apply: func(_ *rand.Rand, s string) string { return DistortText(s) }},
 	{ID: "baby", Emoji: "👶", order: 10, apply: func(_ *rand.Rand, s string) string { return babyTalk(s) }},
 	{ID: "typos", Emoji: "🍺", order: 20, apply: drunkTyping},
 	{ID: "caps", Emoji: "📢", order: 30, cased: true, apply: func(_ *rand.Rand, s string) string { return capsHysteria(s) }},

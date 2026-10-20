@@ -292,3 +292,17 @@ func TestE2EDemotivatorFromCaption(t *testing.T) {
 		t.Fatalf("%+v", c.params)
 	}
 }
+
+func TestE2EPickedEffectsKeepCaption(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("photo", render(t, "p.jpg", "-f", "lavfi", "-i", "testsrc=size=640x480", "-frames:v", "1"))
+	h.send(&models.Message{ID: 960, From: user(1, "ru"), Chat: private(1), Caption: "котик спит", Photo: []models.PhotoSize{{FileID: "photo"}}})
+	prompt := &models.Message{ID: h.question(1).resultID, Chat: private(1)}
+	for _, data := range []string{"x:p", "p:bulge", "p:rainbow", "p:!"} {
+		h.press(*user(1, "ru"), prompt, data)
+	}
+	// Nothing picked for the caption: it stays as it was.
+	if c := h.api.waitFor("sendPhoto", nil); c.params["caption"] != "котик спит\n\n✨ 🫧 + 🌈" {
+		t.Fatalf("%q", c.params["caption"])
+	}
+}
