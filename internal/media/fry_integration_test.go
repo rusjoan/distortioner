@@ -4,6 +4,7 @@ package media
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +107,8 @@ func TestFryVideoTooLong(t *testing.T) {
 	e := engine(t)
 	in := fixture(t, e, "in.mp4", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=5:duration=10")
 	err := e.FryVideo(context.Background(), in, filepath.Join(t.TempDir(), "o.mp4"), KindVideo, 5)
-	if _, ok := err.(*TooLongError); !ok {
+	var tooLong *TooLongError
+	if !errors.As(err, &tooLong) {
 		t.Fatalf("got %v", err)
 	}
 }
