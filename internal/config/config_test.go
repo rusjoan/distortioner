@@ -18,8 +18,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Mode != ModePolling || c.Codec != "libx264" || c.MaxFileMB != 20 {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-	if c.JobTimeout != 5*time.Minute {
-		t.Fatalf("job timeout %v", c.JobTimeout)
+	if c.JobTimeout != 5*time.Minute || c.BotAPIFilesTTL != 3*time.Hour || c.BotAPIDir != "" {
+		t.Fatalf("unexpected defaults: %+v", c)
 	}
 }
 

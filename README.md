@@ -31,12 +31,17 @@ Prometheus metrics are served on `/metrics`, health checks on `/healthz` and `/r
 ## Running
 
 1. Create a bot with [@BotFather](https://t.me/BotFather).
-2. Copy `.env.example` to `.env`, fill in `DISTORTIONER_BOT_TOKEN` and `DISTORTIONER_ADMIN_IDS`.
+2. On the server, put [deploy/compose.yaml](deploy/compose.yaml) and a `.env` (copy of
+   [.env.example](.env.example)) into one directory; fill in `DISTORTIONER_BOT_TOKEN` and
+   `DISTORTIONER_ADMIN_IDS`.
 3. Start it:
 
 ```bash
 docker compose up -d
 ```
+
+`deploy/compose.yaml` runs the published image `ghcr.io/rusjoan/distortioner`. The `compose.yaml`
+in the repository root builds the image from source instead, for development.
 
 The image includes ffmpeg and ImageMagick 7 with liquid rescale. To run the binary directly you need
 both on `PATH` (`magick` must support `-liquid-rescale`, i.e. be built with liblqr).
@@ -48,7 +53,7 @@ All options are listed in [.env.example](.env.example).
 
 ### Self-hosted Bot API server
 
-The public Bot API does not let bots download files over 20 MB. `compose.yaml` has an optional
+The public Bot API does not let bots download files over 20 MB. Both compose files have an optional
 [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) server (profile `local-api`, `--local` mode)
 that lifts the limit to 2000 MB:
 
@@ -66,7 +71,8 @@ that lifts the limit to 2000 MB:
 4. Raise the limit in `/admin` → ⚙️ Limits (or `DISTORTIONER_MAX_FILE_MB`).
 
 The bot reads downloaded files directly from the server's volume. The server never deletes them,
-so the container removes media older than an hour every 10 minutes.
+so every 15 minutes the bot deletes media older than `DISTORTIONER_BOT_API_FILES_TTL` (3 hours)
+from `DISTORTIONER_BOT_API_DIR`; the server's own state is left alone.
 
 ### Webhook mode
 

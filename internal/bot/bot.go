@@ -34,6 +34,8 @@ const (
 	noRightsTTL = 10 * time.Minute
 	// positionRefresh is how often queued jobs get their place updated.
 	positionRefresh = 5 * time.Second
+	// botAPISweep is how often old files of a local Bot API server are deleted.
+	botAPISweep = 15 * time.Minute
 )
 
 // Deps wires the bot.
@@ -359,7 +361,10 @@ func (b *Bot) Run(ctx context.Context) {
 	defer positions.Stop()
 	hourly := time.NewTicker(time.Hour)
 	defer hourly.Stop()
+	sweep := time.NewTicker(botAPISweep)
+	defer sweep.Stop()
 	b.housekeeping(ctx)
+	b.sweepBotAPIFiles()
 	for {
 		select {
 		case <-ctx.Done():
@@ -368,7 +373,24 @@ func (b *Bot) Run(ctx context.Context) {
 			b.refreshPositions(ctx)
 		case <-hourly.C:
 			b.housekeeping(ctx)
+		case <-sweep.C:
+			b.sweepBotAPIFiles()
 		}
+	}
+}
+
+// sweepBotAPIFiles deletes media a self-hosted Bot API server downloaded
+// for us: the server keeps every file forever.
+func (b *Bot) sweepBotAPIFiles() {
+	if b.Cfg.BotAPIDir == "" {
+		return
+	}
+	n, freed, err := telegram.SweepLocalFiles(b.Cfg.BotAPIDir, b.Cfg.BotAPIFilesTTL, time.Now())
+	if err != nil {
+		b.Log.Warn("sweep bot api files", "dir", b.Cfg.BotAPIDir, "err", err)
+	}
+	if n > 0 {
+		b.Log.Info("deleted old bot api files", "count", n, "mb", freed>>20)
 	}
 }
 
