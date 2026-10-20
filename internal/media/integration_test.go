@@ -138,6 +138,34 @@ func TestVideoNote(t *testing.T) {
 	}
 }
 
+// Lower fps and processing scale make it faster but keep the output size.
+func TestFasterSettingsKeepSize(t *testing.T) {
+	e := engine(t)
+	in := fixture(t, e, "in.mp4", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=60:duration=2", "-c:v", "libx264")
+	out := filepath.Join(t.TempDir(), "out.mp4")
+	var frames int
+	if err := e.DistortVideo(context.Background(), in, out, VideoOptions{
+		Kind: KindVideo, Strength: 50, MaxSeconds: 60, MaxFPS: 15, ProcessScale: 50, WorkDir: t.TempDir(),
+		Progress: func(s Stage, _, total int) {
+			if s == StageDistorting {
+				frames = total
+			}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := e.Probe(context.Background(), out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Width != 512 || info.Height != 288 {
+		t.Fatalf("output %dx%d, want 512x288", info.Width, info.Height)
+	}
+	if frames < 28 || frames > 32 || info.FPS > 15.01 {
+		t.Fatalf("%d frames at %v fps, want 30 at 15", frames, info.FPS)
+	}
+}
+
 func TestAnimationHasNoSound(t *testing.T) {
 	e := engine(t)
 	in := fixture(t, e, "in.gif", "-f", "lavfi", "-i", "testsrc=size=201x151:rate=10:duration=1")
@@ -207,8 +235,8 @@ func TestCancelKillsProcesses(t *testing.T) {
 	}
 }
 
-// BenchmarkDistortVideo measures a typical phone clip: 10 s, 720p, 60 fps, with sound.
-// Run with: make itest-bench
+// BenchmarkDistortVideo measures a typical phone clip (10 s, 720p, 60 fps,
+// with sound) with the default and the faster settings. Run: make itest-bench
 func BenchmarkDistortVideo(b *testing.B) {
 	e := NewEngine(runtime.NumCPU(), "libx264")
 	dir := b.TempDir()
@@ -218,17 +246,29 @@ func BenchmarkDistortVideo(b *testing.B) {
 		"-f", "lavfi", "-i", "sine=duration=10", "-c:v", "libx264", "-c:a", "aac", "-shortest", in); err != nil {
 		b.Fatal(err)
 	}
-	b.ResetTimer()
-	for i := range b.N {
-		work := filepath.Join(dir, "work", strconv.Itoa(i))
-		if err := os.MkdirAll(work, 0o700); err != nil {
-			b.Fatal(err)
-		}
-		out := filepath.Join(dir, strconv.Itoa(i)+".mp4")
-		if err := e.DistortVideo(context.Background(), in, out, VideoOptions{
-			Kind: KindVideo, Strength: 50, MaxSeconds: 60, DistortAudio: true, WorkDir: work,
-		}); err != nil {
-			b.Fatal(err)
-		}
+	for _, c := range []struct {
+		name       string
+		fps, scale int
+	}{
+		{"default", 30, 100},
+		{"fps20", 20, 100},
+		{"scale75", 30, 75},
+		{"fps20_scale75", 20, 75},
+		{"fps15_scale50", 15, 50},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			for i := range b.N {
+				work := filepath.Join(dir, c.name, strconv.Itoa(i))
+				if err := os.MkdirAll(work, 0o700); err != nil {
+					b.Fatal(err)
+				}
+				if err := e.DistortVideo(context.Background(), in, filepath.Join(work, "out.mp4"), VideoOptions{
+					Kind: KindVideo, Strength: 50, MaxSeconds: 60, DistortAudio: true,
+					MaxFPS: c.fps, ProcessScale: c.scale, WorkDir: work,
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

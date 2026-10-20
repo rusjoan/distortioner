@@ -107,21 +107,6 @@ func (e *Engine) DistortImage(ctx context.Context, in, out string, strength Stre
 	return err
 }
 
-// distortFrame distorts a video frame in place; frames are already small.
-func (e *Engine) distortFrame(ctx context.Context, path string, strength Strength) error {
-	if err := e.acquire(ctx); err != nil {
-		return err
-	}
-	defer e.release()
-
-	keep := strength.keep()
-	_, err := run(ctx, e.magickEn, e.Magick, path,
-		"-liquid-rescale", fmt.Sprintf("%d%%", keep),
-		"-resize", fmt.Sprintf("%.4f%%", 100*100/float64(keep)),
-		path)
-	return err
-}
-
 // vibrato builds the audio filter; stronger distortion means deeper vibrato.
 func vibrato(strength Strength) string {
 	depth := min(max(0.2+float64(strength)/100, 0.3), 1.0)

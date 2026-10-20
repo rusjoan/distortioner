@@ -24,6 +24,8 @@ const (
 	RateWindow      Key = "rate_window_seconds"
 	DefaultStrength Key = "default_strength"
 	MaxFileMB       Key = "max_file_mb"
+	MaxFPS          Key = "max_fps"
+	ProcessScale    Key = "process_scale"
 )
 
 // Spec describes the default and valid range of an integer setting.
@@ -38,6 +40,8 @@ type Spec struct {
 var defaultSpecs = []Spec{
 	{MaxFileMB, PublicAPIMaxFileMB, 1, PublicAPIMaxFileMB},
 	{MaxVideoSeconds, 60, 5, 600},
+	{MaxFPS, 30, 5, 60},
+	{ProcessScale, 100, 25, 100},
 	{MaxJobsPerChat, 3, 1, 50},
 	{MaxQueue, 500, 10, 10000},
 	{RateLimit, 5, 1, 100},

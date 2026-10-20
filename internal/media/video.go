@@ -26,9 +26,11 @@ const (
 
 const (
 	maxSide       = 512
-	maxFPS        = 30
-	defaultFPS    = 25
+	defaultMaxFPS = 30
+	defaultFPS    = 25 // when the input does not report a rate
 	stickerMaxSec = 3
+	// framesPerProcess is the largest batch handed to one ImageMagick process.
+	framesPerProcess = 30
 )
 
 // ErrNoVideo is returned for files without a video stream.
@@ -54,6 +56,13 @@ type VideoOptions struct {
 	Strength     Strength
 	MaxSeconds   int
 	DistortAudio bool
+	// MaxFPS caps the frame rate; fewer frames mean proportionally less work.
+	// Zero means 30.
+	MaxFPS int
+	// ProcessScale shrinks frames, in percent, just for seam carving; they
+	// are scaled back afterwards, so the output size does not change.
+	// Lower is faster and blurrier. Zero means 100.
+	ProcessScale int
 	// WorkDir holds intermediate frames; it must exist and be private to the job.
 	WorkDir string
 	// Progress, if set, is called from several goroutines.
@@ -83,11 +92,15 @@ func (e *Engine) DistortVideo(ctx context.Context, in, out string, opt VideoOpti
 		return &TooLongError{Limit: maxSec}
 	}
 
+	maxFPS := opt.MaxFPS
+	if maxFPS <= 0 {
+		maxFPS = defaultMaxFPS
+	}
 	fps := info.FPS
 	if fps <= 0 || math.IsInf(fps, 0) {
 		fps = defaultFPS
 	}
-	fps = min(fps, maxFPS)
+	fps = min(fps, float64(maxFPS))
 	rate := strconv.FormatFloat(fps, 'f', 3, 64)
 
 	framesDir := filepath.Join(opt.WorkDir, "frames")
@@ -110,7 +123,11 @@ func (e *Engine) DistortVideo(ctx context.Context, in, out string, opt VideoOpti
 	}
 	sort.Strings(frames)
 
-	if err := e.distortFrames(ctx, frames, opt.Strength, report); err != nil {
+	scale := opt.ProcessScale
+	if scale <= 0 || scale > 100 {
+		scale = 100
+	}
+	if err := e.distortFrames(ctx, frames, opt.Strength, scale, report); err != nil {
 		return fmt.Errorf("distort frames: %w", err)
 	}
 
@@ -143,23 +160,50 @@ func (e *Engine) extractFrames(ctx context.Context, in, pattern string, info Inf
 	return err
 }
 
-func (e *Engine) distortFrames(ctx context.Context, frames []string, strength Strength, report func(Stage, int, int)) error {
+// distortFrames distorts frames in place, in batches: one ImageMagick
+// process per batch saves process start-up and initialisation per frame.
+// Batches stay small enough to keep every CPU slot busy.
+func (e *Engine) distortFrames(ctx context.Context, frames []string, strength Strength, scale int, report func(Stage, int, int)) error {
 	total := len(frames)
 	report(StageDistorting, 0, total)
 
+	batch := min(framesPerProcess, max(1, total/(e.CPULimit()*4)))
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(e.CPULimit())
 	var done atomic.Int64
-	for _, frame := range frames {
+	for start := 0; start < total; start += batch {
+		files := frames[start:min(start+batch, total)]
 		g.Go(func() error {
-			if err := e.distortFrame(ctx, frame, strength); err != nil {
+			if err := e.distortBatch(ctx, files, strength, scale); err != nil {
 				return err
 			}
-			report(StageDistorting, int(done.Add(1)), total)
+			report(StageDistorting, int(done.Add(int64(len(files)))), total)
 			return nil
 		})
 	}
 	return g.Wait()
+}
+
+// distortBatch distorts frames in place with a single mogrify process.
+// With scale below 100 the frame is shrunk for seam carving only and
+// scaled back in the same step, so its size does not change.
+func (e *Engine) distortBatch(ctx context.Context, files []string, strength Strength, scale int) error {
+	if err := e.acquire(ctx); err != nil {
+		return err
+	}
+	defer e.release()
+
+	keep := strength.keep()
+	args := []string{"mogrify"}
+	if scale < 100 {
+		args = append(args, "-resize", fmt.Sprintf("%d%%", scale))
+	}
+	back := 100 * (100 / float64(keep)) * (100 / float64(scale))
+	args = append(args,
+		"-liquid-rescale", fmt.Sprintf("%d%%", keep),
+		"-resize", fmt.Sprintf("%.4f%%", back))
+	_, err := run(ctx, e.magickEn, e.Magick, append(args, files...)...)
+	return err
 }
 
 func (e *Engine) encode(ctx context.Context, in, pattern, out string, info Info, rate string, opt VideoOptions) error {

@@ -185,6 +185,8 @@ func (b *Bot) distort(ctx context.Context, t *task, it item, in string, i int, m
 		Kind:         vk,
 		Strength:     strength,
 		MaxSeconds:   b.Settings.Int(settings.MaxVideoSeconds),
+		MaxFPS:       b.Settings.Int(settings.MaxFPS),
+		ProcessScale: b.Settings.Int(settings.ProcessScale),
 		DistortAudio: t.r.prefs.DistortAudio,
 		WorkDir:      frames,
 		Progress: func(stage media.Stage, done, total int) {
