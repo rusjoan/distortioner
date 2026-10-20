@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +32,27 @@ func (e *CommandError) Unwrap() error { return e.Err }
 
 const stderrTail = 1024
 
+// ToolObserver receives every run of an external tool: its name, whether it
+// succeeded, wall time and CPU time (user + system).
+type ToolObserver func(tool string, ok bool, wall, cpu time.Duration)
+
+var toolObserver atomic.Pointer[ToolObserver]
+
+// SetToolObserver installs the observer, e.g. for metrics.
+func SetToolObserver(o ToolObserver) { toolObserver.Store(&o) }
+
+func observeTool(cmd *exec.Cmd, start time.Time, err error) {
+	o := toolObserver.Load()
+	if o == nil {
+		return
+	}
+	var cpu time.Duration
+	if ps := cmd.ProcessState; ps != nil {
+		cpu = ps.UserTime() + ps.SystemTime()
+	}
+	(*o)(filepath.Base(cmd.Path), err == nil, time.Since(start), cpu)
+}
+
 // run executes a tool in its own process group so that cancelling ctx kills
 // it together with any children, and returns stdout.
 func run(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
@@ -43,7 +66,10 @@ func run(ctx context.Context, env []string, name string, args ...string) ([]byte
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	start := time.Now()
+	err := cmd.Run()
+	observeTool(cmd, start, err)
+	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -78,6 +104,7 @@ func runProgress(ctx context.Context, name string, args []string, expected float
 	if err != nil {
 		return err
 	}
+	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return &CommandError{Tool: name, Err: err}
 	}
@@ -89,7 +116,9 @@ func runProgress(ctx context.Context, name string, args []string, expected float
 			}
 		}
 	}
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+	observeTool(cmd, start, err)
+	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}

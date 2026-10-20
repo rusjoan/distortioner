@@ -400,6 +400,7 @@ type Snapshot struct {
 	Running int
 	Workers int
 	AvgRun  time.Duration
+	Rate    float64    // seconds of work per unit of cost
 	Chats   []ChatLoad // busiest first
 }
 
@@ -421,7 +422,7 @@ func (p *Pool) Snapshot() Snapshot {
 	for _, j := range p.running {
 		get(j.ChatID).Running++
 	}
-	s := Snapshot{Queued: p.queued, Running: len(p.running), Workers: p.workers, AvgRun: p.avg}
+	s := Snapshot{Queued: p.queued, Running: len(p.running), Workers: p.workers, AvgRun: p.avg, Rate: p.rate}
 	for _, l := range loads {
 		s.Chats = append(s.Chats, *l)
 	}

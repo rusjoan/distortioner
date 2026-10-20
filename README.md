@@ -74,6 +74,22 @@ The bot reads downloaded files directly from the server's volume. The server nev
 so every 15 minutes the bot deletes media older than `DISTORTIONER_BOT_API_FILES_TTL` (3 hours)
 from `DISTORTIONER_BOT_API_DIR`; the server's own state is left alone.
 
+### Monitoring
+
+Both compose files have a `monitoring` profile: Prometheus, Grafana and node-exporter with a ready
+dashboard ([deploy/monitoring](deploy/monitoring)): unique users, requests and effects, processing
+and queue times, Bot API calls and errors, file sizes, CPU of ffmpeg and ImageMagick, disks and network.
+On a server, copy the `deploy/monitoring` directory next to `compose.yaml`, set
+`GRAFANA_ADMIN_PASSWORD` in `.env` and start it:
+
+```bash
+docker compose --profile monitoring up -d
+```
+
+Grafana listens on `127.0.0.1:3000` and Prometheus on `127.0.0.1:9090` (`GRAFANA_PORT`,
+`PROMETHEUS_PORT`). The dashboard JSON can also be imported into an existing Grafana: it asks for a
+Prometheus data source and expects the jobs `distortioner` and `node` (both selectable on top).
+
 ### Webhook mode
 
 Set `DISTORTIONER_MODE=webhook`, `DISTORTIONER_WEBHOOK_URL` (the public URL; its path is served by the bot)

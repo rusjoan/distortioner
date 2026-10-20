@@ -43,6 +43,18 @@ func LookupText(id string) (TextEffect, bool) {
 	return e, ok
 }
 
+// SplitText separates text effects from media effects.
+func (r Recipe) SplitText() (steps, text Recipe) {
+	for _, s := range r {
+		if _, ok := textCatalog[s.ID]; ok {
+			text = append(text, s)
+		} else {
+			steps = append(steps, s)
+		}
+	}
+	return steps, text
+}
+
 // maxMessage is Telegram's limit for a text message.
 const maxMessage = 4096
 

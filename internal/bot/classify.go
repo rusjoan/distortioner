@@ -52,7 +52,21 @@ func classify(m *models.Message) (it item, ok, unsupported bool) {
 	if strings.HasPrefix(it.caption, "/") {
 		it.caption = "" // the caption was a command such as /fry, not text to keep
 	}
+	it.caption = stripTag(it.caption)
 	return it, ok, unsupported
+}
+
+// stripTag drops the line naming the applied effects that results carry,
+// so that chained results do not pile them up.
+func stripTag(caption string) string {
+	head, last := "", caption
+	if i := strings.LastIndex(caption, "\n\n"); i >= 0 {
+		head, last = caption[:i], caption[i+2:]
+	}
+	if strings.HasPrefix(last, "🎲 ") || strings.HasPrefix(last, "✨ ") {
+		return head
+	}
+	return caption
 }
 
 func classifyMedia(m *models.Message) (it item, ok, unsupported bool) {

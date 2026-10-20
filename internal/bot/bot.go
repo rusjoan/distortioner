@@ -99,9 +99,13 @@ func (b *Bot) Handle(ctx context.Context, _ *tgbot.Bot, u *models.Update) {
 	}()
 	switch {
 	case u.CallbackQuery != nil:
+		b.Metrics.Update("callback")
 		b.onCallback(ctx, u.CallbackQuery)
 	case u.Message != nil:
+		b.Metrics.Update("message")
 		b.onMessage(ctx, u.Message)
+	default:
+		b.Metrics.Update("other")
 	}
 }
 
@@ -115,6 +119,7 @@ type request struct {
 	prefs   store.ChatSettings
 	mode    Mode
 	recipe  media.Recipe // for ModeRecipe
+	caption media.Recipe // text effects for the caption of media, from the picker
 	wobble  media.Strength
 	fry     media.Strength
 	via     string // statistics source when it is not implied by the mode
@@ -201,8 +206,19 @@ func (b *Bot) prefs(ctx context.Context, chatID int64) store.ChatSettings {
 	return p
 }
 
+// knownCommands keeps the command metric's labels bounded.
+var knownCommands = map[string]bool{
+	"start": true, "help": true, "settings": true, "admin": true,
+	"distort": true, "wobble": true, "fry": true, "fx": true,
+}
+
 func (b *Bot) onCommand(ctx context.Context, m *models.Message, cmd command, isGroup, isAdmin bool) {
 	r := b.newRequest(ctx, m, m.From, m.ID)
+	if knownCommands[cmd.name] {
+		b.Metrics.Command(cmd.name)
+	} else {
+		b.Metrics.Command("other")
+	}
 	switch cmd.name {
 	case "start":
 		b.reply(ctx, r, i18n.T(r.lang, "start"))
@@ -272,6 +288,7 @@ func (b *Bot) process(ctx context.Context, r request) {
 	it, ok, unsupported := classify(r.source)
 	switch {
 	case unsupported:
+		b.Metrics.Rejection("not_supported")
 		b.reply(ctx, r, i18n.T(r.lang, "err.not_supported"))
 		return
 	case !ok:
@@ -315,6 +332,7 @@ func (b *Bot) distortText(ctx context.Context, r request) {
 // when the request is rejected.
 func (b *Bot) admit(ctx context.Context, r request, kind Kind, items []item) bool {
 	if b.blockedByRights(r.chatID) {
+		b.Metrics.Rejection("no_rights")
 		return false
 	}
 	if on, text := b.Settings.Maintenance(); on && !b.Cfg.IsAdmin(r.userID) {
@@ -323,24 +341,25 @@ func (b *Bot) admit(ctx context.Context, r request, kind Kind, items []item) boo
 		} else {
 			text = html.EscapeString(text)
 		}
-		b.reject(ctx, r, kind, text)
+		b.reject(ctx, r, kind, "maintenance", text)
 		return false
 	}
 	maxMB := b.Settings.Int(settings.MaxFileMB)
 	for _, it := range items {
 		if it.size > int64(maxMB)<<20 {
-			b.reject(ctx, r, kind, i18n.T(r.lang, "err.too_big", maxMB))
+			b.reject(ctx, r, kind, "too_big", i18n.T(r.lang, "err.too_big", maxMB))
 			return false
 		}
 	}
 	if ok, wait := b.Limiter.Allow(r.chatID, time.Now()); !ok && !b.Cfg.IsAdmin(r.userID) {
-		b.reject(ctx, r, kind, i18n.T(r.lang, "err.rate_limited", humanDuration(r.lang, wait)))
+		b.reject(ctx, r, kind, "rate_limited", i18n.T(r.lang, "err.rate_limited", humanDuration(r.lang, wait)))
 		return false
 	}
 	return true
 }
 
-func (b *Bot) reject(ctx context.Context, r request, kind Kind, text string) {
+func (b *Bot) reject(ctx context.Context, r request, kind Kind, reason, text string) {
+	b.Metrics.Rejection(reason)
 	b.reply(ctx, r, text)
 	b.record(r, kind, store.StatusRejected, 0, nil)
 }
@@ -387,17 +406,18 @@ func (b *Bot) record(r request, k Kind, status string, d time.Duration, recipe m
 	}
 	var effects []string
 	if status == store.StatusOK {
-		effects = recipe.IDs()
+		effects = append(recipe.IDs(), r.caption.IDs()...)
 		for _, e := range effects {
 			b.Metrics.Effect(e)
 		}
+		b.Metrics.Source(r.statSource())
 	}
 	// Stats must not slow down or fail the request.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := b.Store.RecordEvent(ctx, store.Event{
-			ChatID: r.chatID, IsGroup: r.isGroup, Kind: kind, Status: status, Duration: d,
+			ChatID: r.chatID, UserID: r.userID, IsGroup: r.isGroup, Kind: kind, Status: status, Duration: d,
 			Source: r.statSource(), Effects: effects,
 		}); err != nil {
 			b.Log.Warn("record event", "err", err)
@@ -434,6 +454,13 @@ func humanDuration(lang i18n.Lang, d time.Duration) string {
 		return i18n.T(lang, "dur.sec", int(d.Seconds()))
 	}
 	return i18n.T(lang, "dur.min", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+// Waiting counts questions and pickers waiting for a tap.
+func (b *Bot) Waiting() int {
+	b.pending.mu.Lock()
+	defer b.pending.mu.Unlock()
+	return len(b.pending.m)
 }
 
 // Run performs periodic housekeeping until ctx is done.

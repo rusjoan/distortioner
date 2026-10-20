@@ -62,9 +62,13 @@ func (r Recipe) IDs() []string {
 
 // Emoji returns the effects as emoji, e.g. "🫧 + 🌈".
 func (r Recipe) Emoji() string {
+	steps, text := r.SplitText()
 	parts := make([]string, 0, len(r))
-	for _, s := range r.sorted() {
+	for _, s := range steps.sorted() {
 		parts = append(parts, catalog[s.ID].Emoji)
+	}
+	for _, s := range text {
+		parts = append(parts, textCatalog[s.ID].Emoji)
 	}
 	return strings.Join(parts, " + ")
 }

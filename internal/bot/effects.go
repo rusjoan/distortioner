@@ -126,6 +126,7 @@ type pending struct {
 	selected []string  // picker selection
 	kind     media.MediaKind
 	text     bool // the target is text: text effects instead of media ones
+	caption  bool // media with a caption: text effects rewrite it
 	expires  time.Time
 }
 
@@ -191,6 +192,7 @@ func (b *Bot) ask(ctx context.Context, parts []request) {
 		p.kind, p.text = it.kind.mediaKind(), it.kind == KindText
 	}
 	p.kind = albumKind(parts, p.kind)
+	p.caption = !p.text && hasCaption(parts)
 	m, err := b.TG.SendText(ctx, r.chatID, r.source.ID, i18n.T(r.lang, "ask.what"), p.choices(r.lang, false))
 	if err != nil {
 		b.handleSendError(ctx, r, err)
@@ -210,6 +212,16 @@ func albumKind(parts []request, first media.MediaKind) media.MediaKind {
 	return first
 }
 
+// hasCaption reports whether any part has a caption to rewrite.
+func hasCaption(parts []request) bool {
+	for _, r := range parts {
+		if it, ok, _ := classify(r.source); ok && it.caption != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // target finds what the tapped buttons apply to: the media behind our
 // question, or the result the buttons are attached to.
 func (b *Bot) target(ctx context.Context, cq *models.CallbackQuery) (*pending, bool) {
@@ -223,13 +235,13 @@ func (b *Bot) target(ctx context.Context, cq *models.CallbackQuery) (*pending, b
 	if it, ok, _ := classify(msg); ok && it.kind != KindText {
 		// A media result: the buttons apply to the message itself, replying to it.
 		r := b.newRequest(ctx, msg, &cq.From, msg.ID)
-		return &pending{parts: []request{r}, kind: it.kind.mediaKind()}, true
+		return &pending{parts: []request{r}, kind: it.kind.mediaKind(), caption: it.caption != ""}, true
 	}
 	if orig := msg.ReplyToMessage; orig != nil {
 		if it, ok, _ := classify(orig); ok && it.kind != KindText {
 			// Our question after a restart: the media is what it replies to.
 			r := b.newRequest(ctx, orig, &cq.From, orig.ID)
-			return &pending{parts: []request{r}, question: true, kind: it.kind.mediaKind()}, true
+			return &pending{parts: []request{r}, question: true, kind: it.kind.mediaKind(), caption: it.caption != ""}, true
 		}
 	}
 	if msg.Text != "" && !isOurQuestion(msg.Text) {
@@ -283,12 +295,20 @@ func (b *Bot) start(ctx context.Context, msg *models.Message, p *pending, mode M
 	if mode == ModeRecipe {
 		via = store.SourcePicker
 	}
+	var caption media.Recipe
+	if !p.text {
+		recipe, caption = recipe.SplitText()
+	}
 	parts := make([]request, len(p.parts))
 	for i, part := range p.parts {
 		// Settings and language follow whoever tapped the button.
 		r := b.newRequest(ctx, part.source, from, part.replyTo)
-		r.mode, r.recipe, r.via = mode, recipe, via
+		r.mode, r.recipe, r.caption, r.via = mode, recipe, caption, via
 		parts[i] = r
+	}
+	if mode == ModeRecipe && len(recipe) == 0 && len(caption) > 0 {
+		b.recaption(ctx, parts)
+		return
 	}
 	if len(parts) > 1 {
 		b.processAlbum(ctx, parts)
@@ -335,21 +355,37 @@ var textPickerRows = func() []pickerRow {
 	return []pickerRow{{"picker.text", ids}}
 }()
 
+// captionPickerRows rewrite the caption of media.
+var captionPickerRows = []pickerRow{{"picker.caption", textPickerRows[0].ids}}
+
 // applies reports whether an effect can be picked for the target.
 func (p *pending) applies(id string) bool {
-	if p.text {
-		_, ok := media.LookupText(id)
-		return ok
+	if _, ok := media.LookupText(id); ok || p.text {
+		return ok && (p.text || p.caption)
 	}
 	e, ok := media.Lookup(id)
 	return ok && e.AppliesTo(p.kind)
 }
 
+const pickerPerRow = 5
+
+// effectEmoji is the button face of an effect.
+func effectEmoji(id string) string {
+	if e, ok := media.LookupText(id); ok {
+		return e.Emoji
+	}
+	e, _ := media.Lookup(id)
+	return e.Emoji
+}
+
 func pickerMarkup(lang i18n.Lang, p *pending) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
 	groups := pickerRows
-	if p.text {
+	switch {
+	case p.text:
 		groups = textPickerRows
+	case p.caption:
+		groups = append(slices.Clone(pickerRows), captionPickerRows...)
 	}
 	for _, group := range groups {
 		var row []models.InlineKeyboardButton
@@ -357,9 +393,10 @@ func pickerMarkup(lang i18n.Lang, p *pending) *models.InlineKeyboardMarkup {
 			if !p.applies(id) {
 				continue
 			}
-			label := i18n.T(lang, "fx."+id)
+			// Names do not fit: the buttons show emoji, a tap shows the name.
+			label := effectEmoji(id)
 			if slices.Contains(p.selected, id) {
-				label = "✅ " + label
+				label = "✅" + label
 			}
 			row = append(row, models.InlineKeyboardButton{Text: label, CallbackData: "p:" + id})
 		}
@@ -367,8 +404,11 @@ func pickerMarkup(lang i18n.Lang, p *pending) *models.InlineKeyboardMarkup {
 			continue
 		}
 		rows = append(rows, []models.InlineKeyboardButton{{Text: "— " + i18n.T(lang, group.title) + " —", CallbackData: "p:-"}})
+		// Up to five a row, split evenly: 9 → 5 + 4, 6 → 3 + 3.
+		lines := (len(row) + pickerPerRow - 1) / pickerPerRow
+		per := (len(row) + lines - 1) / lines
 		for len(row) > 0 {
-			n := min(3, len(row))
+			n := min(per, len(row))
 			rows, row = append(rows, row[:n]), row[n:]
 		}
 	}
@@ -397,13 +437,14 @@ func toggle(selected []string, id string) []string {
 		return append(out, id)
 	}
 	e, _ := media.Lookup(id)
-	if e.Group == media.GroupWhole {
-		return []string{id}
-	}
 	out := selected[:0:0]
 	for _, s := range selected {
+		if _, text := media.LookupText(s); text {
+			out = append(out, s) // caption effects go with anything
+			continue
+		}
 		other, _ := media.Lookup(s)
-		if other.Group == media.GroupWhole || (e.Speed && other.Speed) {
+		if e.Group == media.GroupWhole || other.Group == media.GroupWhole || (e.Speed && other.Speed) {
 			continue
 		}
 		out = append(out, s)
@@ -458,7 +499,7 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 			return
 		}
 		p.selected = toggle(p.selected, arg)
-		b.TG.Answer(ctx, cq.ID, "", false)
+		b.TG.Answer(ctx, cq.ID, i18n.T(lang, "fx."+arg), false)
 		b.showPicker(ctx, msg, p, lang)
 	}
 }
@@ -466,6 +507,7 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 // resultCaption adds what was applied, for random picks and picked effects.
 func resultCaption(r request, recipe media.Recipe, caption string) string {
 	var tag string
+	recipe = append(slices.Clone(recipe), r.caption...)
 	switch r.mode {
 	case ModeRandom:
 		tag = "🎲 " + recipe.Emoji()

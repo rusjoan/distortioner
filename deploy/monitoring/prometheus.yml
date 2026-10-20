@@ -1,0 +1,13 @@
+# Scrapes the bot and the host. Used by the monitoring profile of compose.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: distortioner
+    static_configs:
+      - targets: ["distortioner:8080"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]

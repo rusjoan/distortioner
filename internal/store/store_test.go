@@ -192,3 +192,23 @@ func TestEffectStats(t *testing.T) {
 		t.Fatalf("after prune %v", all.Effects)
 	}
 }
+
+func TestActiveSince(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+	for _, e := range []Event{
+		{ChatID: 1, UserID: 1, Kind: "photo", Status: StatusOK, At: now},
+		{ChatID: -5, UserID: 1, IsGroup: true, Kind: "video", Status: StatusOK, At: now},
+		{ChatID: -5, UserID: 2, IsGroup: true, Kind: "video", Status: StatusRejected, At: now},
+		{ChatID: 3, UserID: 3, Kind: "text", Status: StatusOK, At: now.Add(-48 * time.Hour)},
+	} {
+		if err := s.RecordEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := s.ActiveSince(ctx, now.Add(-24*time.Hour))
+	if err != nil || a != (Active{Users: 2, Chats: 2, Groups: 1}) {
+		t.Fatalf("%+v %v", a, err)
+	}
+}

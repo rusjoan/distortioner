@@ -24,6 +24,7 @@ import (
 //	a:…                    admin panel
 func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
 	data := cq.Data
+	b.Metrics.Button(buttonAction(data))
 	switch {
 	case strings.HasPrefix(data, "a:"):
 		if b.Cfg.IsAdmin(cq.From.ID) {
@@ -205,4 +206,33 @@ func (b *Bot) isChatAdmin(ctx context.Context, chatID, userID int64) bool {
 		return false
 	}
 	return m.Type == models.ChatMemberTypeOwner || m.Type == models.ChatMemberTypeAdministrator
+}
+
+// buttonAction names a callback for metrics with a bounded set of labels.
+func buttonAction(data string) string {
+	switch {
+	case data == "x:r":
+		return "random"
+	case data == "x:w":
+		return "wobble"
+	case data == "x:f":
+		return "fry"
+	case data == "x:p":
+		return "picker_open"
+	case data == "p:!":
+		return "picker_apply"
+	case data == "p:x":
+		return "picker_close"
+	case strings.HasPrefix(data, "p:"):
+		return "picker_toggle"
+	case strings.HasPrefix(data, "c:"):
+		return "cancel"
+	case strings.HasPrefix(data, "s:"):
+		return "settings"
+	case strings.HasPrefix(data, "a:"):
+		return "admin"
+	case strings.HasPrefix(data, "r:"), data == "f":
+		return "legacy"
+	}
+	return "other"
 }

@@ -24,14 +24,16 @@ import (
 
 // task is the state shared by a job's Run and Done callbacks.
 type task struct {
-	r        request
-	kind     Kind
-	items    []item
-	recipe   media.Recipe
-	workDir  string
-	inputs   []string
-	progress *telegram.Progress
-	started  time.Time
+	r         request
+	kind      Kind
+	items     []item
+	recipe    media.Recipe
+	pool      string // "video" or "image", for metrics
+	submitted time.Time
+	workDir   string
+	inputs    []string
+	progress  *telegram.Progress
+	started   time.Time
 }
 
 // submit queues the items as one job: a single item or a whole album.
@@ -69,7 +71,10 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 		pool, poolName = b.Video, "v"
 	}
 
-	t := &task{r: r, kind: kind, items: items, recipe: recipe}
+	t := &task{r: r, kind: kind, items: items, recipe: recipe, pool: "image", submitted: time.Now()}
+	if heavy {
+		t.pool = "video"
+	}
 	if slow {
 		// Show progress right away; the cancel button is added once the job has an id.
 		p, err := b.TG.StartProgress(ctx, r.chatID, r.replyTo, i18n.T(r.lang, "progress.downloading"), nil)
@@ -103,13 +108,14 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 	}
 	id, err := pool.Submit(job)
 	if err != nil {
-		text := i18n.T(r.lang, "err.queue_full")
+		text, reason := i18n.T(r.lang, "err.queue_full"), "queue_full"
 		switch {
 		case errors.Is(err, jobs.ErrChatLimit):
-			text = i18n.T(r.lang, "err.chat_limit", b.Settings.Int(settings.MaxJobsPerChat))
+			text, reason = i18n.T(r.lang, "err.chat_limit", b.Settings.Int(settings.MaxJobsPerChat)), "chat_limit"
 		case errors.Is(err, jobs.ErrClosed):
-			text = i18n.T(r.lang, "err.shutdown")
+			text, reason = i18n.T(r.lang, "err.shutdown"), "shutdown"
 		}
+		b.Metrics.Rejection(reason)
 		if t.progress != nil {
 			t.progress.Finish(ctx, text)
 		} else {
@@ -141,6 +147,7 @@ func cancelMarkup(lang i18n.Lang, pool string, id uint64) models.ReplyMarkup {
 // run downloads, distorts and sends the result. It runs on a pool worker.
 func (b *Bot) run(ctx context.Context, t *task, poolName string, id uint64) error {
 	t.started = time.Now()
+	b.Metrics.QueueWait(t.pool, t.started.Sub(t.submitted))
 	dir, err := os.MkdirTemp(b.Cfg.TempDir, "distortioner-")
 	if err != nil {
 		return err
@@ -157,25 +164,65 @@ func (b *Bot) run(ctx context.Context, t *task, poolName string, id uint64) erro
 	outputs := make([]string, len(t.items))
 	for i, it := range t.items {
 		in := filepath.Join(dir, fmt.Sprintf("in%d%s", i, it.ext))
+		start := time.Now()
 		if err := b.TG.Download(ctx, it.fileID, in); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
+		b.Metrics.Stage("download", string(it.kind), time.Since(start))
+		b.Metrics.Input(string(it.kind), fileSize(in), it.duration)
 		t.inputs = append(t.inputs, in)
 
+		start = time.Now()
 		out, err := b.apply(ctx, t, it, in, i, markup)
 		if err != nil {
 			return err
 		}
+		b.Metrics.Stage("process", string(it.kind), time.Since(start))
+		b.Metrics.Output(string(it.kind), fileSize(out))
 		outputs[i] = out
 	}
 
 	if t.progress != nil {
 		t.progress.Set(ctx, i18n.T(t.r.lang, "progress.uploading"), markup)
 	}
+	start := time.Now()
+	defer func() { b.Metrics.Stage("upload", string(t.kind), time.Since(start)) }()
 	if len(t.items) > 1 {
 		return b.sendAlbum(ctx, t, outputs)
 	}
 	return b.sendResult(ctx, t, t.items[0], outputs[0])
+}
+
+func fileSize(path string) int64 {
+	if st, err := os.Stat(path); err == nil {
+		return st.Size()
+	}
+	return 0
+}
+
+// outcome names how a job ended, for metrics.
+func outcome(err error) string {
+	var tooLong *media.TooLongError
+	var panicked *jobs.PanicError
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, jobs.ErrCanceled):
+		return "canceled"
+	case errors.Is(err, jobs.ErrShutdown):
+		return "shutdown"
+	case errors.As(err, &tooLong):
+		return "too_long"
+	case errors.Is(err, media.ErrNoVideo), errors.Is(err, media.ErrNothingToApply):
+		return "unsupported"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.As(err, &panicked):
+		return "panic"
+	case telegram.IsBlocked(err):
+		return "blocked"
+	}
+	return "failed"
 }
 
 // stageReporter shows a new stage right away and throttles the percent
@@ -242,7 +289,11 @@ func (b *Bot) apply(ctx context.Context, t *task, it item, in string, i int, mar
 	stages := &stageReporter{ctx: ctx, progress: t.progress, lang: t.r.lang, markup: markup}
 	var poster media.Demotivator
 	if t.recipe.Has("demotivator") {
-		poster = b.demotivatorText(it.caption, t.r.lang)
+		text := it.caption
+		if len(t.r.caption) > 0 {
+			text = b.captionText(t.r, text)
+		}
+		poster = b.demotivatorText(text, t.r.lang)
 	}
 	err := b.Engine.Apply(ctx, in, out, t.recipe, media.ApplyOptions{
 		Kind:         it.kind.mediaKind(),
@@ -287,8 +338,8 @@ func progressBar(pct int) string {
 func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) error {
 	r := t.r
 	caption := ""
-	if it.caption != "" && !t.recipe.Has("demotivator") { // the poster already shows it
-		caption = media.DistortText(it.caption)
+	if !t.recipe.Has("demotivator") { // the poster already shows it
+		caption = b.captionText(r, it.caption)
 	}
 	caption = resultCaption(r, t.recipe, caption)
 	reply := telegram.ReplyTo(r.replyTo)
@@ -348,10 +399,7 @@ func (b *Bot) sendAlbum(ctx context.Context, t *task, outputs []string) error {
 			}
 			defer f.Close()
 			name := fmt.Sprintf("f%d", i) // attachment field names stay ASCII
-			caption := ""
-			if t.items[i].caption != "" {
-				caption = media.DistortText(t.items[i].caption)
-			}
+			caption := b.captionText(r, t.items[i].caption)
 			if i == 0 {
 				caption = resultCaption(r, t.recipe, caption)
 			}
@@ -372,6 +420,7 @@ func (b *Bot) sendAlbum(ctx context.Context, t *task, outputs []string) error {
 func (b *Bot) done(t *task, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	b.Metrics.Outcome(t.pool, outcome(err))
 	r := t.r
 	defer func() {
 		if t.workDir != "" {
@@ -568,4 +617,41 @@ func (b *Bot) demotivatorText(caption string, lang i18n.Lang) media.Demotivator 
 	b.rndMu.Lock()
 	defer b.rndMu.Unlock()
 	return pool[b.rnd.IntN(len(pool))]
+}
+
+// maxCaption leaves room for the effects line within Telegram's 1024.
+const maxCaption = 960
+
+// captionText rewrites the caption of a result: the picked text effects,
+// or the classic mocking case.
+func (b *Bot) captionText(r request, caption string) string {
+	if caption == "" {
+		return ""
+	}
+	if len(r.caption) == 0 {
+		return media.DistortText(caption)
+	}
+	b.rndMu.Lock()
+	caption = media.ApplyText(b.rnd, r.caption, caption)
+	b.rndMu.Unlock()
+	if runes := []rune(caption); len(runes) > maxCaption {
+		caption = string(runes[:maxCaption])
+	}
+	return caption
+}
+
+// recaption answers a pick of caption effects only: the media is sent
+// back as is, with the new caption.
+func (b *Bot) recaption(ctx context.Context, parts []request) {
+	for _, r := range parts {
+		it, _, _ := classify(r.source)
+		kind := it.kind
+		caption := resultCaption(r, nil, b.captionText(r, it.caption))
+		if err := b.TG.Copy(ctx, r.chatID, r.source.Chat.ID, r.source.ID, r.replyTo, caption, choiceMarkup(r.lang, true)); err != nil {
+			b.handleSendError(ctx, r, err)
+			b.record(r, kind, store.StatusFailed, 0, nil)
+			continue
+		}
+		b.record(r, kind, store.StatusOK, 0, nil)
+	}
 }

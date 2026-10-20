@@ -118,6 +118,8 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		result = map[string]any{"file_id": c.params["file_id"], "file_unique_id": "u", "file_path": c.params["file_id"]}
 	case "getChatMember":
 		result = map[string]any{"status": member, "user": map[string]any{"id": 1, "is_bot": false, "first_name": "x"}}
+	case "copyMessage":
+		result = map[string]any{"message_id": id}
 	case "sendMediaGroup":
 		result = []any{map[string]any{"message_id": id, "date": time.Now().Unix(), "chat": map[string]any{"id": json.Number(chatID), "type": "private"}}}
 	default:
@@ -225,7 +227,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tg := telegram.New(tb)
+	tg := telegram.New(tb, nil)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if testing.Verbose() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -236,7 +238,7 @@ func newHarness(t *testing.T) *harness {
 		Cfg: cfg, TG: tg, Store: st, Settings: sets, Engine: engine, Video: video, Image: image,
 		Limiter: limiter.New(func() int { return sets.Int(settings.RateLimit) },
 			func() time.Duration { return time.Duration(sets.Int(settings.RateWindow)) * time.Second }),
-		Metrics: metrics.New(), Admin: panel, Log: log,
+		Metrics: metrics.New("test"), Admin: panel, Log: log,
 		Me: &models.User{ID: 123, IsBot: true, Username: "distortioner_bot"},
 	})
 	b.rnd = rand.New(rand.NewPCG(7, 7)) // deterministic random picks
@@ -262,7 +264,8 @@ func (h *harness) send(m *models.Message) {
 func (h *harness) question(chatID int64) call {
 	h.api.t.Helper()
 	c := h.api.waitFor("sendMessage", func(c call) bool {
-		return c.params["text"] == "What should I do with it?" || c.params["text"] == "Что с этим сделать?"
+		return c.params["chat_id"] == fmt.Sprint(chatID) &&
+			(c.params["text"] == "What should I do with it?" || c.params["text"] == "Что с этим сделать?")
 	})
 	deadline := time.Now().Add(5 * time.Second)
 	for h.pending.get(chatID, c.resultID) == nil {

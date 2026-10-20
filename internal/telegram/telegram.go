@@ -23,9 +23,12 @@ type Client struct {
 	http *http.Client
 }
 
-// New wraps b.
-func New(b *bot.Bot) *Client {
-	return &Client{Bot: b, http: &http.Client{Timeout: 5 * time.Minute}}
+// New wraps b; downloads go through httpClient (nil means a default one).
+func New(b *bot.Bot, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Minute}
+	}
+	return &Client{Bot: b, http: httpClient}
 }
 
 const (
@@ -141,6 +144,17 @@ func (c *Client) SendText(ctx context.Context, chatID int64, replyTo int, text s
 			},
 		})
 	})
+}
+
+// Copy sends a copy of a message with a new caption.
+func (c *Client) Copy(ctx context.Context, chatID, fromChatID int64, messageID, replyTo int, caption string, markup models.ReplyMarkup) error {
+	_, err := Retry(ctx, func(ctx context.Context) (*models.MessageID, error) {
+		return c.CopyMessage(ctx, &bot.CopyMessageParams{
+			ChatID: chatID, FromChatID: fromChatID, MessageID: messageID, Caption: caption,
+			ReplyParameters: ReplyTo(replyTo), ReplyMarkup: markup,
+		})
+	})
+	return err
 }
 
 // EditText edits an HTML message; "not modified" is not an error.

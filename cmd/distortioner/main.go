@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -102,21 +103,14 @@ func run() error {
 		func() time.Duration { return time.Duration(sets.Int(settings.RateWindow)) * time.Second },
 	)
 
-	m := metrics.New()
-	for name, p := range map[string]*jobs.Pool{"video": video, "image": image} {
-		m.Gauge("distortioner_jobs_queued", "Jobs waiting in the queue.", prometheus.Labels{"pool": name},
-			func() float64 { return float64(p.Snapshot().Queued) })
-		m.Gauge("distortioner_jobs_running", "Jobs being processed.", prometheus.Labels{"pool": name},
-			func() float64 { return float64(p.Snapshot().Running) })
-	}
-	m.Gauge("distortioner_cpu_slots_in_use", "ImageMagick processes running.", nil,
-		func() float64 { return float64(engine.CPUInUse()) })
-	m.Gauge("distortioner_maintenance", "1 when maintenance mode is on.", nil, func() float64 {
-		if on, _ := sets.Maintenance(); on {
-			return 1
-		}
-		return 0
-	})
+	m := metrics.New(version)
+	media.SetToolObserver(m.Tool)
+	registerGauges(ctx, m, cfg, st, sets, engine, map[string]*jobs.Pool{"video": video, "image": image}, lim)
+
+	// One instrumented HTTP client for every Bot API call and file download.
+	// No global timeout: uploads of large files take long, and every call
+	// already has a context with a deadline.
+	httpClient := &http.Client{Transport: telegram.Instrument(nil, m.TelegramCall)}
 
 	// The handler is bound after the client exists: the bot needs both.
 	var handler *bot.Bot
@@ -127,6 +121,7 @@ func run() error {
 		tgbot.WithAllowedUpdates(allowedUpdates),
 		tgbot.WithErrorsHandler(func(err error) { log.Warn("telegram", "err", err) }),
 		tgbot.WithSkipGetMe(), // called below, where we need the result
+		tgbot.WithHTTPClient(time.Minute, httpClient),
 	}
 	if cfg.APIURL != "" {
 		opts = append(opts, tgbot.WithServerURL(cfg.APIURL))
@@ -142,7 +137,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("telegram getMe: %w", err)
 	}
-	tg := telegram.New(tb)
+	tg := telegram.New(tb, httpClient)
 
 	panel := admin.New(admin.Deps{
 		Cfg: cfg, TG: tg, Store: st, Settings: sets, Video: video, Image: image, Engine: engine, Log: log,
@@ -152,6 +147,8 @@ func run() error {
 		Limiter: lim, Metrics: m, Admin: panel, Log: log, Me: me,
 	})
 	setCommands(ctx, tb, cfg, log)
+	m.Gauge("distortioner_pending_questions", "Questions and pickers waiting for a tap.", nil,
+		func() float64 { return float64(handler.Waiting()) })
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -202,6 +199,66 @@ func run() error {
 	_ = srv.Shutdown(shutdownCtx)
 	log.Info("bye")
 	return nil
+}
+
+// registerGauges exposes state that is read on every scrape: queues, CPU
+// slots, active users, disks and directories.
+func registerGauges(ctx context.Context, m *metrics.Metrics, cfg *config.Config, st *store.Store, sets *settings.Service,
+	engine *media.Engine, pools map[string]*jobs.Pool, lim *limiter.Limiter) {
+	for name, p := range pools {
+		labels := prometheus.Labels{"pool": name}
+		m.Gauge("distortioner_jobs_queued", "Jobs waiting in the queue.", labels,
+			func() float64 { return float64(p.Snapshot().Queued) })
+		m.Gauge("distortioner_jobs_running", "Jobs being processed.", labels,
+			func() float64 { return float64(p.Snapshot().Running) })
+		m.Gauge("distortioner_pool_workers", "Workers of the pool.", labels,
+			func() float64 { return float64(p.Workers()) })
+		m.Gauge("distortioner_pool_seconds_per_media_second", "Learned processing speed: seconds of work per second of media.", labels,
+			func() float64 { return p.Snapshot().Rate })
+	}
+	m.Gauge("distortioner_cpu_slots_in_use", "ImageMagick processes running.", nil,
+		func() float64 { return float64(engine.CPUInUse()) })
+	m.Gauge("distortioner_cpu_slots", "ImageMagick processes allowed at once.", nil,
+		func() float64 { return float64(engine.CPULimit()) })
+	m.Gauge("distortioner_rate_limited_chats", "Chats tracked by the rate limiter.", nil,
+		func() float64 { return float64(lim.Len()) })
+	m.Gauge("distortioner_maintenance", "1 when maintenance mode is on.", nil, func() float64 {
+		if on, _ := sets.Maintenance(); on {
+			return 1
+		}
+		return 0
+	})
+
+	// Distinct users, chats and groups: one query per window, at most a minute old.
+	for window, d := range map[string]time.Duration{"24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour} {
+		var mu sync.Mutex
+		var last store.Active
+		var at time.Time
+		active := func() store.Active {
+			mu.Lock()
+			defer mu.Unlock()
+			if time.Since(at) > time.Minute {
+				if a, err := st.ActiveSince(ctx, time.Now().Add(-d)); err == nil {
+					last, at = a, time.Now()
+				}
+			}
+			return last
+		}
+		labels := prometheus.Labels{"window": window}
+		m.Gauge("distortioner_active_users", "Distinct users with a request in the window.", labels, func() float64 { return float64(active().Users) })
+		m.Gauge("distortioner_active_chats", "Distinct chats with a request in the window.", labels, func() float64 { return float64(active().Chats) })
+		m.Gauge("distortioner_active_groups", "Distinct group chats with a request in the window.", labels, func() float64 { return float64(active().Groups) })
+	}
+
+	m.Volume("data", cfg.DataDir)
+	m.Volume("temp", cfg.TempDir)
+	m.Dir("data", cfg.DataDir, "")
+	m.Dir("failed_inputs", filepath.Join(cfg.DataDir, "failed"), "")
+	m.Dir("work", cfg.TempDir, "distortioner-")
+	if cfg.BotAPIDir != "" {
+		m.Volume("bot_api", cfg.BotAPIDir)
+		m.Dir("bot_api", cfg.BotAPIDir, "")
+	}
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {

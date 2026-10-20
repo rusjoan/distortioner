@@ -398,6 +398,51 @@ func TestPromptForMediaWithoutCommand(t *testing.T) {
 	}
 }
 
+func TestPickerCaptionEffects(t *testing.T) {
+	h := newHarness(t)
+	u := *user(1, "en")
+
+	// No caption, no caption row.
+	h.send(&models.Message{ID: 400, From: user(1, "en"), Chat: private(1), Photo: []models.PhotoSize{{FileID: "p0"}}})
+	bare := &models.Message{ID: h.question(1).resultID, Chat: private(1)}
+	h.press(u, bare, "x:p")
+	if c := h.api.waitFor("editMessageText", nil); strings.Contains(c.params["reply_markup"], `"p:caps"`) {
+		t.Fatalf("caption effects without a caption: %s", c.params["reply_markup"])
+	}
+
+	u = *user(2, "en")
+	h.send(&models.Message{ID: 500, From: user(2, "en"), Chat: private(2), Photo: []models.PhotoSize{{FileID: "p"}}, Caption: "hello there"})
+	prompt := &models.Message{ID: h.question(2).resultID, Chat: private(2)}
+	h.press(u, prompt, "x:p")
+	h.api.waitFor("editMessageText", func(c call) bool {
+		return strings.Contains(c.params["reply_markup"], "caption") && strings.Contains(c.params["reply_markup"], `"p:caps"`)
+	})
+	h.press(u, prompt, "p:caps")
+	// A tap names the effect, since the buttons show only emoji.
+	h.api.waitFor("answerCallbackQuery", func(c call) bool { return c.params["text"] != "" })
+	h.press(u, prompt, "p:!")
+	// Caption effects alone: the photo comes back as is, with a new caption.
+	c := h.api.waitFor("copyMessage", nil)
+	if c.params["message_id"] != "500" || !strings.Contains(c.params["caption"], "HELLO") || !strings.Contains(c.params["caption"], "✨ 📢") {
+		t.Fatalf("%+v", c.params)
+	}
+	if n := len(h.api.find("getFile")); n != 0 {
+		t.Fatal("downloaded the photo for a caption change")
+	}
+}
+
+func TestStripTag(t *testing.T) {
+	for in, want := range map[string]string{
+		"hello\n\n✨ 🫧 + 📢": "hello",
+		"🎲 🌀":              "",
+		"hello\n\nworld":   "hello\n\nworld",
+	} {
+		if got := stripTag(in); got != want {
+			t.Errorf("stripTag(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestPicker(t *testing.T) {
 	h := newHarness(t)
 	h.send(&models.Message{ID: 500, From: user(1, "en"), Chat: private(1), Video: &models.Video{FileID: "v"}})
@@ -415,21 +460,19 @@ func TestPicker(t *testing.T) {
 	// Tempo changes exclude each other.
 	h.press(u, prompt, "p:fast")
 	h.press(u, prompt, "p:slow")
-	if m := last(); !strings.Contains(m, "✅ 🐌") || strings.Contains(m, "✅ ⏩") || !strings.Contains(m, "Apply (1)") {
+	if m := last(); !strings.Contains(m, "✅🐌") || strings.Contains(m, "✅⏩") || !strings.Contains(m, "Apply (1)") {
 		t.Fatalf("%s", m)
 	}
 	// wobble and fry go alone.
 	h.press(u, prompt, "p:bulge")
 	h.press(u, prompt, "p:fry")
-	if m := last(); !strings.Contains(m, "✅ 🔥") || strings.Contains(m, "✅ 🫧") || !strings.Contains(m, "Apply (1)") {
+	if m := last(); !strings.Contains(m, "✅🔥") || strings.Contains(m, "✅🫧") || !strings.Contains(m, "Apply (1)") {
 		t.Fatalf("%s", m)
 	}
 	h.press(u, prompt, "p:fry") // unselect
 	before := edits()
 	h.press(u, prompt, "p:!")
-	if c := h.api.waitFor("answerCallbackQuery", func(c call) bool { return c.params["text"] != "" }); !strings.Contains(c.params["text"], "at least one") {
-		t.Fatalf("%+v", c.params)
-	}
+	h.api.waitFor("answerCallbackQuery", func(c call) bool { return strings.Contains(c.params["text"], "at least one") })
 	if edits() != before {
 		t.Fatal("applied an empty selection")
 	}

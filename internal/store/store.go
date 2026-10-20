@@ -156,6 +156,7 @@ const (
 // Event is a single distortion request outcome.
 type Event struct {
 	ChatID   int64
+	UserID   int64
 	IsGroup  bool
 	Kind     string
 	Status   string
@@ -172,8 +173,8 @@ func (s *Store) RecordEvent(ctx context.Context, e Event) error {
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`insert into events (chat_id, is_group, kind, status, duration_ms, created_at, source) values (?, ?, ?, ?, ?, ?, ?)`,
-			e.ChatID, e.IsGroup, e.Kind, e.Status, e.Duration.Milliseconds(), e.At.Unix(), e.Source)
+			`insert into events (chat_id, user_id, is_group, kind, status, duration_ms, created_at, source) values (?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ChatID, e.UserID, e.IsGroup, e.Kind, e.Status, e.Duration.Milliseconds(), e.At.Unix(), e.Source)
 		if err != nil {
 			return err
 		}
@@ -188,6 +189,20 @@ func (s *Store) RecordEvent(ctx context.Context, e Event) error {
 		}
 		return nil
 	})
+}
+
+// Active counts distinct users, chats and group chats with any request.
+type Active struct{ Users, Chats, Groups int }
+
+// ActiveSince counts who used the bot at or after since.
+func (s *Store) ActiveSince(ctx context.Context, since time.Time) (Active, error) {
+	var a Active
+	err := s.db.QueryRowContext(ctx, `
+		select count(distinct case when user_id != 0 then user_id end),
+		       count(distinct chat_id),
+		       count(distinct case when is_group = 1 then chat_id end)
+		from events where created_at >= ?`, since.Unix()).Scan(&a.Users, &a.Chats, &a.Groups)
+	return a, err
 }
 
 // EffectStats counts effect uses and request sources of successful events.
