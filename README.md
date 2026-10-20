@@ -90,7 +90,7 @@ make run     # run locally with variables from .env
 
 Releases: `make release VERSION=1.2.3` checks that `master` is clean and in sync, runs lint and tests,
 then tags `v1.2.3` and pushes the tag. GitHub Actions builds an amd64 image
-(`ghcr.io/<owner>/distortioner:1.2.3`, `:1.2`, `:latest`) and attaches linux/amd64 and linux/arm64 binaries
+(`ghcr.io/<owner>/distortioner:1.2.3`, `:1.2`, `:1`, `:latest`) and attaches linux/amd64 and linux/arm64 binaries
 to a GitHub release.
 
 ## How it works

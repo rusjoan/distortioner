@@ -10,7 +10,9 @@
 
 services:
   distortioner:
-    image: ghcr.io/rusjoan/distortioner:2.0 # follows 2.0.x; pin e.g. 2.0.2 for exact versions
+    # :2.1 follows 2.1.x; :2 (published from 2.1.1 on) follows every 2.x;
+    # pin e.g. 2.1.0 for exact versions.
+    image: ghcr.io/rusjoan/distortioner:2.1
     restart: unless-stopped
     env_file: .env
     environment:
