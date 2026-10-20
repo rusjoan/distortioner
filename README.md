@@ -66,7 +66,8 @@ that lifts the limit to 2000 MB:
 4. Raise the limit in `/admin` → ⚙️ Limits (or `DISTORTIONER_MAX_FILE_MB`).
 
 The bot reads downloaded files directly from the server's volume. The server never deletes them,
-so the container removes media older than an hour every 10 minutes.
+so every 15 minutes the bot deletes media older than `DISTORTIONER_BOT_API_FILES_TTL` (3 hours)
+from `DISTORTIONER_BOT_API_DIR`; the server's own state is left alone.
 
 ### Webhook mode
 

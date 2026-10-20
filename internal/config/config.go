@@ -55,6 +55,12 @@ type Config struct {
 
 	StatsRetention time.Duration
 
+	// BotAPIDir is the working directory of a self-hosted Bot API server in
+	// --local mode, mounted into the bot; its media files are deleted after
+	// BotAPIFilesTTL. Empty disables the sweep.
+	BotAPIDir      string
+	BotAPIFilesTTL time.Duration
+
 	// PriorityChats seeds the priority list in the database on startup.
 	PriorityChats []int64
 
@@ -101,6 +107,8 @@ func load(getenv func(string) string) (*Config, error) {
 		FailedTTL:        r.duration("FAILED_TTL", 72*time.Hour),
 		FailedMaxBytes:   int64(r.int("FAILED_MAX_MB", 500)) << 20,
 		StatsRetention:   time.Duration(r.int("STATS_RETENTION_DAYS", 365)) * 24 * time.Hour,
+		BotAPIDir:        r.str("BOT_API_DIR", ""),
+		BotAPIFilesTTL:   r.duration("BOT_API_FILES_TTL", 3*time.Hour),
 		PriorityChats:    r.ids("PRIORITY_CHATS"),
 		LogFormat:        r.str("LOG_FORMAT", "json"),
 	}
@@ -138,6 +146,9 @@ func (c *Config) validate() []error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("%sMODE must be polling or webhook, got %q", envPrefix, c.Mode))
+	}
+	if c.BotAPIFilesTTL <= 0 {
+		errs = append(errs, errors.New(envPrefix+"BOT_API_FILES_TTL must be positive"))
 	}
 	if c.LogFormat != "json" && c.LogFormat != "text" {
 		errs = append(errs, fmt.Errorf("%sLOG_FORMAT must be json or text, got %q", envPrefix, c.LogFormat))

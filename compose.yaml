@@ -6,11 +6,13 @@ services:
     env_file: .env
     environment:
       DISTORTIONER_TEMP_DIR: /tmp/distortioner
+      DISTORTIONER_BOT_API_DIR: /var/lib/telegram-bot-api
     volumes:
       - data:/app/data
       # Files downloaded by the local Bot API server (profile local-api) are
       # read straight from its volume, at the same path the server reports.
-      - bot-api:/var/lib/telegram-bot-api:ro
+      # The bot also deletes them after DISTORTIONER_BOT_API_FILES_TTL (3h).
+      - bot-api:/var/lib/telegram-bot-api
     # Video frames are written and read many times: keep them in memory.
     tmpfs:
       - /tmp/distortioner:size=2g,mode=1777
@@ -34,11 +36,8 @@ services:
       TELEGRAM_LOCAL: "1"
     volumes:
       - bot-api:/var/lib/telegram-bot-api
-    # 1. The server keeps files private to its user (mode 750/600), so it
-    #    runs with the bot's uid (10001) to let the bot read them.
-    # 2. It never deletes downloaded files: media older than an hour is removed
-    #    every 10 minutes; the per-bot database (top level of each bot
-    #    directory) is left alone.
+    # The server keeps files private to its user (mode 750/600), so it runs
+    # with the bot's uid (10001): the bot reads and deletes them.
     entrypoint:
       - sh
       - -c
@@ -47,12 +46,6 @@ services:
         sed -i 's/^telegram-bot-api:x:[0-9]*:/telegram-bot-api:x:10001:/' /etc/group
         mkdir -p /tmp/telegram-bot-api
         chown -R telegram-bot-api:telegram-bot-api /var/lib/telegram-bot-api /tmp/telegram-bot-api
-        (while true; do
-          sleep 600
-          find /var/lib/telegram-bot-api -mindepth 3 -type f -mmin +60 \
-            -regex '.*/\(animations\|documents\|music\|photos\|stickers\|temp\|thumbnails\|video_notes\|videos\|voice\)/.*' \
-            -delete
-        done) &
         exec /docker-entrypoint.sh
 
 volumes:
