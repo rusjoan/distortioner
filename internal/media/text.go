@@ -73,14 +73,9 @@ func ApplyText(rnd *rand.Rand, recipe Recipe, s string) string {
 	return s
 }
 
-// RandomText picks a text effect: the classic mocking case half of the
-// time, one of the others otherwise.
+// RandomText picks one text effect, all with equal odds.
 func RandomText(rnd *rand.Rand) Recipe {
-	if rnd.Float64() < 0.5 {
-		return Recipe{{ID: "mock"}}
-	}
-	others := TextCatalog[1:]
-	return Recipe{{ID: others[rnd.IntN(len(others))].ID}}
+	return Recipe{{ID: TextCatalog[rnd.IntN(len(TextCatalog))].ID}}
 }
 
 // FriedText is what /fry does to text: shouting with emoji.

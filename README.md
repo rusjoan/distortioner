@@ -89,6 +89,7 @@ docker compose --profile monitoring up -d
 Grafana listens on `127.0.0.1:3000` and Prometheus on `127.0.0.1:9090` (`GRAFANA_PORT`,
 `PROMETHEUS_PORT`). The dashboard JSON can also be imported into an existing Grafana: it asks for a
 Prometheus data source and expects the jobs `distortioner` and `node` (both selectable on top).
+The JSON is generated: edit `deploy/monitoring/dashboard.py` and run it.
 
 ### Webhook mode
 

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/go-telegram/bot/models"
+
+	"github.com/graynk/distortioner/internal/media"
 )
 
 // render produces a fixture with ffmpeg's test sources.
@@ -304,5 +306,42 @@ func TestE2EPickedEffectsKeepCaption(t *testing.T) {
 	// Nothing picked for the caption: it stays as it was.
 	if c := h.api.waitFor("sendPhoto", nil); c.params["caption"] != "котик спит\n\n✨ 🫧 + 🌈" {
 		t.Fatalf("%q", c.params["caption"])
+	}
+}
+
+func TestE2ECaptionFollowsMode(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("photo", render(t, "p.jpg", "-f", "lavfi", "-i", "testsrc=size=640x480", "-frames:v", "1"))
+	photo := func(id int) *models.Message {
+		return &models.Message{ID: id, Chat: private(1), Caption: "nice cat", Photo: []models.PhotoSize{{FileID: "photo"}}}
+	}
+	// The n-th photo sent; results reply to the command, not to the photo.
+	sent := func(n int) string {
+		deadline := time.Now().Add(20 * time.Second)
+		for len(h.api.find("sendPhoto")) < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("photo %d not sent: %v", n, h.api.methods())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return h.api.find("sendPhoto")[n-1].params["caption"]
+	}
+
+	// /fry shouts with emoji.
+	h.command(user(1, "en"), private(1), "/fry", photo(970))
+	if c := sent(1); !strings.Contains(c, "NICE") || !strings.Contains(c, "CAT") {
+		t.Fatalf("fry caption %q", c)
+	}
+	// 🎲 picks a text effect for the caption and names it in the effects line.
+	textEmoji := map[string]bool{}
+	for _, e := range media.TextCatalog {
+		textEmoji[e.Emoji] = true
+	}
+	h.command(user(1, "en"), private(1), "/distort", photo(971))
+	c := sent(2)
+	tag := c[strings.LastIndex(c, "\n\n")+2:]
+	parts := strings.Split(strings.TrimPrefix(tag, "🎲 "), " + ")
+	if !strings.HasPrefix(tag, "🎲 ") || !textEmoji[parts[len(parts)-1]] {
+		t.Fatalf("random caption %q", c)
 	}
 }

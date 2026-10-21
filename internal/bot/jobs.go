@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,8 @@ type task struct {
 	kind      Kind
 	items     []item
 	recipe    media.Recipe
-	pool      string // "video" or "image", for metrics
+	caption   media.Recipe // text effects for the captions
+	pool      string       // "video" or "image", for metrics
 	submitted time.Time
 	workDir   string
 	inputs    []string
@@ -72,6 +74,12 @@ func (b *Bot) submit(ctx context.Context, r request, kind Kind, items []item) {
 	}
 
 	t := &task{r: r, kind: kind, items: items, recipe: recipe, pool: "image", submitted: time.Now()}
+	for _, it := range items {
+		if it.caption != "" {
+			t.caption = b.captionFor(r) // one pick for the whole album
+			break
+		}
+	}
 	if heavy {
 		t.pool = "video"
 	}
@@ -289,11 +297,7 @@ func (b *Bot) apply(ctx context.Context, t *task, it item, in string, i int, mar
 	stages := &stageReporter{ctx: ctx, progress: t.progress, lang: t.r.lang, markup: markup}
 	var poster media.Demotivator
 	if t.recipe.Has("demotivator") {
-		text := it.caption
-		if len(t.r.caption) > 0 {
-			text = b.captionText(t.r, text)
-		}
-		poster = b.demotivatorText(text, t.r.lang)
+		poster = b.demotivatorText(b.captionText(t.caption, it.caption), t.r.lang)
 	}
 	err := b.Engine.Apply(ctx, in, out, t.recipe, media.ApplyOptions{
 		Kind:         it.kind.mediaKind(),
@@ -339,9 +343,9 @@ func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) erro
 	r := t.r
 	caption := ""
 	if !t.recipe.Has("demotivator") { // the poster already shows it
-		caption = b.captionText(r, it.caption)
+		caption = b.captionText(t.caption, it.caption)
 	}
-	caption = resultCaption(r, t.recipe, caption)
+	caption = resultCaption(r, t.applied(), caption)
 	reply := telegram.ReplyTo(r.replyTo)
 	markup := choiceMarkup(r.lang, true)
 
@@ -399,9 +403,9 @@ func (b *Bot) sendAlbum(ctx context.Context, t *task, outputs []string) error {
 			}
 			defer f.Close()
 			name := fmt.Sprintf("f%d", i) // attachment field names stay ASCII
-			caption := b.captionText(r, t.items[i].caption)
+			caption := b.captionText(t.caption, t.items[i].caption)
 			if i == 0 {
-				caption = resultCaption(r, t.recipe, caption)
+				caption = resultCaption(r, t.applied(), caption)
 			}
 			if t.items[i].kind == KindPhoto {
 				group[i] = &models.InputMediaPhoto{Media: "attach://" + name, MediaAttachment: f, Caption: caption}
@@ -432,7 +436,7 @@ func (b *Bot) done(t *task, err error) {
 		if t.progress != nil {
 			t.progress.Delete(ctx)
 		}
-		b.record(r, t.kind, store.StatusOK, time.Since(t.started), t.recipe)
+		b.record(r, t.kind, store.StatusOK, time.Since(t.started), t.applied())
 		return
 	}
 
@@ -622,21 +626,16 @@ func (b *Bot) demotivatorText(caption string, lang i18n.Lang) media.Demotivator 
 // maxCaption leaves room for the effects line within Telegram's 1024.
 const maxCaption = 960
 
-// captionText rewrites the caption of a result: the picked text effects;
-// with nothing picked in the picker it is kept as is, otherwise it gets
-// the classic mocking case.
-func (b *Bot) captionText(r request, caption string) string {
-	if caption == "" {
-		return ""
-	}
-	if len(r.caption) == 0 {
-		if r.mode == ModeRecipe {
-			return caption
-		}
-		return media.DistortText(caption)
+// applied is everything the result got: media and caption effects.
+func (t *task) applied() media.Recipe { return append(slices.Clone(t.recipe), t.caption...) }
+
+// captionText applies text effects to a caption; without any it stays.
+func (b *Bot) captionText(fx media.Recipe, caption string) string {
+	if caption == "" || len(fx) == 0 {
+		return caption
 	}
 	b.rndMu.Lock()
-	caption = media.ApplyText(b.rnd, r.caption, caption)
+	caption = media.ApplyText(b.rnd, fx, caption)
 	b.rndMu.Unlock()
 	if runes := []rune(caption); len(runes) > maxCaption {
 		caption = string(runes[:maxCaption])
@@ -650,12 +649,12 @@ func (b *Bot) recaption(ctx context.Context, parts []request) {
 	for _, r := range parts {
 		it, _, _ := classify(r.source)
 		kind := it.kind
-		caption := resultCaption(r, nil, b.captionText(r, it.caption))
+		caption := resultCaption(r, r.caption, b.captionText(r.caption, it.caption))
 		if err := b.TG.Copy(ctx, r.chatID, r.source.Chat.ID, r.source.ID, r.replyTo, caption, choiceMarkup(r.lang, true)); err != nil {
 			b.handleSendError(ctx, r, err)
 			b.record(r, kind, store.StatusFailed, 0, nil)
 			continue
 		}
-		b.record(r, kind, store.StatusOK, 0, nil)
+		b.record(r, kind, store.StatusOK, 0, r.caption)
 	}
 }

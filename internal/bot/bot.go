@@ -406,7 +406,7 @@ func (b *Bot) record(r request, k Kind, status string, d time.Duration, recipe m
 	}
 	var effects []string
 	if status == store.StatusOK {
-		effects = append(recipe.IDs(), r.caption.IDs()...)
+		effects = recipe.IDs()
 		for _, e := range effects {
 			b.Metrics.Effect(e)
 		}

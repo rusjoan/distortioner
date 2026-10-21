@@ -50,6 +50,21 @@ func (k Kind) mediaKind() media.MediaKind {
 	}
 }
 
+// captionFor picks the text effects for captions, following the mode.
+func (b *Bot) captionFor(r request) media.Recipe {
+	switch r.mode {
+	case ModeWobble:
+		return media.Recipe{{ID: "mock"}}
+	case ModeFry:
+		return media.FriedText
+	case ModeRecipe:
+		return r.caption // only what was picked
+	}
+	b.rndMu.Lock()
+	defer b.rndMu.Unlock()
+	return media.RandomText(b.rnd)
+}
+
 // recipeFor turns the request into effects for this media.
 func (b *Bot) recipeFor(r request, kind media.MediaKind, duration float64) media.Recipe {
 	switch r.mode {
@@ -507,7 +522,6 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 // resultCaption adds what was applied, for random picks and picked effects.
 func resultCaption(r request, recipe media.Recipe, caption string) string {
 	var tag string
-	recipe = append(slices.Clone(recipe), r.caption...)
 	switch r.mode {
 	case ModeRandom:
 		tag = "🎲 " + recipe.Emoji()

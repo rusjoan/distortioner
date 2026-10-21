@@ -50,10 +50,10 @@ func TestDrunkAndEmojiAreRandomButBounded(t *testing.T) {
 	}
 }
 
-func TestRandomTextHalfMocking(t *testing.T) {
+func TestRandomTextEqualOdds(t *testing.T) {
 	rnd := rand.New(rand.NewPCG(3, 3))
 	counts := map[string]int{}
-	const n = 10000
+	const n = 30000
 	for range n {
 		r := RandomText(rnd)
 		if len(r) != 1 {
@@ -61,11 +61,8 @@ func TestRandomTextHalfMocking(t *testing.T) {
 		}
 		counts[r[0].ID]++
 	}
-	if share := float64(counts["mock"]) / n; share < 0.48 || share > 0.52 {
-		t.Fatalf("mock share %.3f", share)
-	}
-	for _, e := range TextCatalog[1:] {
-		if share := float64(counts[e.ID]) / n; share < 0.08 || share > 0.12 { // 50% / 5
+	for _, e := range TextCatalog {
+		if share := float64(counts[e.ID]) / n; share < 1.0/6-0.015 || share > 1.0/6+0.015 {
 			t.Errorf("%s share %.3f", e.ID, share)
 		}
 	}

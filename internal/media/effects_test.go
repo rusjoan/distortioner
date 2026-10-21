@@ -76,54 +76,77 @@ func TestPitchKeepsLength(t *testing.T) {
 	}
 }
 
-func TestRandom(t *testing.T) {
-	rnd := rand.New(rand.NewPCG(1, 2))
-	const n = 10000
-	counts := map[string]int{}
-	whole := map[string]int{}
-	for range n {
-		r := Random(rnd, MediaVideo, 10, 50, 50)
-		if len(r) == 0 {
-			t.Fatal("empty recipe")
-		}
-		if len(r) == 1 && (r[0].ID == "wobble" || r[0].ID == "fry") {
-			whole[r[0].ID]++
-			continue
-		}
-		if len(r) > 3 {
-			t.Fatalf("too many effects: %v", r.IDs())
-		}
-		speed, frame, visual := 0, 0, false
-		for _, s := range r {
-			e := catalog[s.ID]
-			if e.Group == GroupWhole {
-				t.Fatalf("whole look in a mix: %v", r.IDs())
+// Each die picks every option, "nothing" included, with equal odds.
+func TestRandomDice(t *testing.T) {
+	const n = 30000
+	pictureOf := map[string]bool{}
+	for _, tc := range []struct {
+		kind                   MediaKind
+		duration               float64
+		picture, sound, timing []string
+	}{
+		{MediaVideo, 10, []string{"wobble", "fry", "bulge", "swirl", "pixel", "rainbow", "mirror", "trails", "drunk", "shake"},
+			[]string{"", "earrape", "chipmunk", "demon", "echo"}, []string{"", "reverse", "fast", "slow"}},
+		{MediaVideo, 60, nil, nil, []string{"", "fast", "slow"}}, // no reverse for long videos
+		{MediaPhoto, 0, []string{"wobble", "fry", "bulge", "swirl", "pixel", "rainbow", "mirror"}, nil, nil},
+		{MediaAnimation, 5, []string{"wobble", "fry", "bulge", "swirl", "pixel", "rainbow", "mirror", "trails", "drunk", "shake"},
+			nil, []string{"", "reverse", "fast", "slow"}},
+		{MediaVoice, 5, nil, []string{"wobble", "fry", "earrape", "chipmunk", "demon", "echo"}, []string{"", "reverse", "fast", "slow"}},
+	} {
+		rnd := rand.New(rand.NewPCG(1, uint64(tc.kind)))
+		picture, sound, timing := map[string]int{}, map[string]int{}, map[string]int{}
+		soundRolls := 0
+		for range n {
+			r := Random(rnd, tc.kind, tc.duration, 50, 50)
+			look, heard, when := "", "", ""
+			for _, s := range r {
+				e := catalog[s.ID]
+				switch {
+				case e.Group == GroupTime:
+					when = s.ID
+				case tc.kind.sound() || e.Group == GroupSound:
+					heard = s.ID
+				default:
+					look = s.ID
+				}
 			}
-			if e.Speed {
-				speed++
+			if !tc.kind.sound() && look == "" {
+				t.Fatalf("kind %d: nothing for the picture in %v", tc.kind, r.IDs())
 			}
-			if e.frame != nil {
-				frame++
+			picture[look]++
+			timing[when]++
+			if look == "wobble" || look == "fry" {
+				if heard != "" {
+					t.Fatalf("%s got a second sound: %v", look, r.IDs())
+				}
+				continue
 			}
-			visual = visual || e.Visual()
-			counts[s.ID]++
+			soundRolls++
+			sound[heard]++
 		}
-		if speed > 1 || frame > 1 || !visual {
-			t.Fatalf("bad mix %v", r.IDs())
+		check := func(die string, got map[string]int, want []string, rolls int) {
+			if want == nil {
+				return
+			}
+			if len(got) != len(want) {
+				t.Errorf("kind %d %s: got %v, want %v", tc.kind, die, got, want)
+			}
+			for _, id := range want {
+				share, expect := float64(got[id])/float64(rolls), 1/float64(len(want))
+				if share < expect-0.015 || share > expect+0.015 {
+					t.Errorf("kind %d %s %q: share %.3f, want %.3f", tc.kind, die, id, share, expect)
+				}
+			}
+		}
+		check("picture", picture, tc.picture, n)
+		check("sound", sound, tc.sound, soundRolls)
+		check("time", timing, tc.timing, n)
+		for id := range picture {
+			pictureOf[id] = true
 		}
 	}
-	for id, share := range map[string]float64{"wobble": randomWobble, "fry": randomFry} {
-		if got := float64(whole[id]) / n; got < share-0.02 || got > share+0.02 {
-			t.Errorf("%s share %.3f, want ≈%.2f", id, got, share)
-		}
-	}
-	for _, e := range Catalog {
-		switch {
-		case e.NoRandom && counts[e.ID] > 0:
-			t.Errorf("%s picked at random", e.ID)
-		case !e.NoRandom && e.Group != GroupWhole && e.AppliesTo(MediaVideo) && counts[e.ID] == 0:
-			t.Errorf("%s never picked", e.ID)
-		}
+	if pictureOf["demotivator"] {
+		t.Error("demotivator picked at random")
 	}
 }
 

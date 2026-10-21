@@ -2,77 +2,71 @@ package media
 
 import "math/rand/v2"
 
-// Chances of a random pick: wobble or fry on their own, otherwise a mix.
-const (
-	randomWobble = 0.35
-	randomFry    = 0.35
-	// maxReverseSeconds: reverse buffers the whole stream in memory.
-	maxReverseSeconds = 20
-)
+// maxReverseSeconds: reverse buffers the whole stream in memory.
+const maxReverseSeconds = 20
 
-// Random picks a recipe for /distort. wobble and fry use the given
-// strengths. duration is the input length in seconds (0 if unknown).
+// Random picks a recipe for /distort with three independent dice, each
+// choosing one option with equal odds:
+//   - picture: any effect that changes the picture, wobble and fry included;
+//   - sound: nothing or a sound effect; skipped after wobble and fry, which
+//     bring their own sound. Without a picture (voice, audio) wobble and fry
+//     are sound options and "nothing" is not;
+//   - time: nothing, reverse or a tempo change.
+//
+// wobble and fry use the given strengths. duration is the input length in
+// seconds (0 if unknown).
 func Random(rnd *rand.Rand, kind MediaKind, duration float64, wobble, fry Strength) Recipe {
-	switch p := rnd.Float64(); {
-	case p < randomWobble:
-		return Recipe{{ID: "wobble", Strength: wobble}}
-	case p < randomWobble+randomFry:
-		return Recipe{{ID: "fry", Strength: fry}}
-	}
-	return randomMix(rnd, kind, duration)
-}
-
-// randomMix picks 1–3 compatible effects from the rest of the catalog:
-// at most one tempo change and one per-frame effect (they are expensive),
-// and at least one visual effect for anything with a picture.
-func randomMix(rnd *rand.Rand, kind MediaKind, duration float64) Recipe {
-	var pool []Effect
+	var picture, sound, timing []string
 	for _, e := range Catalog {
-		if e.Group == GroupWhole || e.NoRandom || !e.AppliesTo(kind) {
+		if e.NoRandom || !e.AppliesTo(kind) {
 			continue
 		}
-		if e.ID == "reverse" && duration > maxReverseSeconds {
-			continue
+		switch {
+		case e.Group == GroupTime:
+			if e.ID != "reverse" || duration <= maxReverseSeconds {
+				timing = append(timing, e.ID)
+			}
+		case kind.sound():
+			sound = append(sound, e.ID) // wobble, fry and the sound effects
+		case e.Visual():
+			picture = append(picture, e.ID)
+		case e.Group == GroupSound:
+			sound = append(sound, e.ID)
 		}
-		pool = append(pool, e)
 	}
-	if len(pool) == 0 {
-		return nil
+	if !kind.sound() && len(sound) > 0 {
+		sound = append(sound, "") // a picture is already changed: sound may stay
+	}
+	if len(timing) > 0 {
+		timing = append(timing, "")
 	}
 
-	want := 1 + rnd.IntN(3)
-	var (
-		recipe       Recipe
-		speed, frame bool
-		visual       bool
-	)
-	add := func(e Effect) bool {
-		if recipe.Has(e.ID) || (e.Speed && speed) || (e.frame != nil && frame) {
-			return false
+	var recipe Recipe
+	add := func(id string) {
+		if id == "" {
+			return
 		}
-		recipe = append(recipe, Step{ID: e.ID, Strength: 50})
-		speed = speed || e.Speed
-		frame = frame || e.frame != nil
-		visual = visual || e.Visual()
-		return true
-	}
-	for _, i := range rnd.Perm(len(pool)) {
-		if len(recipe) == want {
-			break
+		s := Step{ID: id, Strength: 50}
+		switch id {
+		case "wobble":
+			s.Strength = wobble
+		case "fry":
+			s.Strength = fry
 		}
-		add(pool[i])
+		recipe = append(recipe, s)
 	}
-	if !kind.sound() && !visual {
-		// A sound-only mix on a video would look untouched: swap one in.
-		for _, i := range rnd.Perm(len(pool)) {
-			if pool[i].Visual() && !pool[i].Speed && pool[i].frame == nil {
-				if len(recipe) == want && len(recipe) > 0 {
-					recipe = recipe[:len(recipe)-1]
-				}
-				add(pool[i])
-				break
-			}
+	roll := func(options []string) string {
+		if len(options) == 0 {
+			return ""
 		}
+		return options[rnd.IntN(len(options))]
 	}
+
+	look := roll(picture)
+	add(look)
+	if look != "wobble" && look != "fry" {
+		add(roll(sound))
+	}
+	add(roll(timing))
 	return recipe
 }
