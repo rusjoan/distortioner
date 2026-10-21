@@ -79,3 +79,20 @@ func TestApplyTextOrderAndLimit(t *testing.T) {
 		t.Fatalf("not cut to the message limit: %d", utf8.RuneCountInString(got))
 	}
 }
+
+func TestClipCountsUTF16(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"привет", 4, "прив"},
+		{"a😂b", 2, "a"}, // the emoji takes two units and does not fit
+		{"a😂b", 3, "a😂"},
+		{"short", 10, "short"},
+	} {
+		if got := Clip(c.in, c.n); got != c.want {
+			t.Errorf("Clip(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}

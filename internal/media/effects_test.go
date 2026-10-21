@@ -47,10 +47,10 @@ func TestApplicability(t *testing.T) {
 }
 
 func TestFryStrengthScales(t *testing.T) {
-	if shake(50) != "crop=w=iw*0.820:h=ih*0.820:x=(iw-ow)/2+(random(1)-0.5)*iw*0.160:y=(ih-oh)/2+(random(2)-0.5)*ih*0.160" {
+	if shake(50) != "crop=w=iw*0.860:h=ih*0.860:x=(iw-ow)/2+(random(1)-0.5)*iw*0.120:y=(ih-oh)/2+(random(2)-0.5)*ih*0.120" {
 		t.Fatalf("shake(50) changed: %s", shake(50))
 	}
-	if !strings.Contains(shake(80), "iw*0.256") || !strings.Contains(shake(20), "iw*0.064") {
+	if !strings.Contains(shake(80), "iw*0.192") || !strings.Contains(shake(20), "iw*0.048") {
 		t.Fatalf("%s / %s", shake(20), shake(80))
 	}
 	for s, want := range map[Strength]string{
@@ -174,7 +174,7 @@ func TestFryDefaults(t *testing.T) {
 	if got := p.Video(false); got != wantVideo {
 		t.Errorf("video\n got %s\nwant %s", got, wantVideo)
 	}
-	wantAudio := "aformat=channel_layouts=mono,bass=g=48:f=40:w=0.8,treble=g=10," +
+	wantAudio := "aformat=channel_layouts=mono,bass=g=24:f=40:w=0.8,treble=g=10," +
 		"loudnorm=I=-10:TP=-1:LRA=7,aresample=48000,volume=10.0dB,asoftclip=type=hard:threshold=0.200," +
 		"acrusher=bits=14:mode=lin:aa=0,volume=1dB,asoftclip=type=hard,volume=-0.5dB"
 	if got := p.Audio(); got != wantAudio {

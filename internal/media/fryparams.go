@@ -36,7 +36,7 @@ type FryParams struct {
 }
 
 // FryDefaults returns the bot's fry at a strength: 50 is the reference
-// (tuned in cmd/frylab); strength moves the shake (6%…26% at 20…80) and the
+// (tuned in cmd/frylab); strength moves the shake (5%…19% at 20…80) and the
 // gain into the clipper (+1…+19 dB). The clip threshold stays put: the
 // hard clipper does not restore loudness, so a lower threshold would make
 // a stronger fry quieter.
@@ -45,9 +45,9 @@ func FryDefaults(s Strength) FryParams {
 	return FryParams{
 		Saturation: 2.2, Contrast: 0.7, Brightness: 0.06, GammaR: 0.25,
 		Sharpen: 2.5, Noise: 25, Shrink: 0.5,
-		Shake: 0.16 * float64(s) / 50,
+		Shake: 0.12 * float64(s) / 50,
 
-		HighPass: 0, Bass: 48, BassFreq: 40, Treble: 10,
+		HighPass: 0, Bass: 24, BassFreq: 40, Treble: 10, // more bass buries vocals on music
 		Loudness:  -10,
 		Gain:      10 + d*0.3,
 		Clip:      0.8,

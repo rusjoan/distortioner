@@ -623,24 +623,22 @@ func (b *Bot) demotivatorText(caption string, lang i18n.Lang) media.Demotivator 
 	return pool[b.rnd.IntN(len(pool))]
 }
 
-// maxCaption leaves room for the effects line within Telegram's 1024.
+// maxCaption leaves room for the effects line within Telegram's 1024
+// UTF-16 code units.
 const maxCaption = 960
 
 // applied is everything the result got: media and caption effects.
 func (t *task) applied() media.Recipe { return append(slices.Clone(t.recipe), t.caption...) }
 
 // captionText applies text effects to a caption; without any it stays.
+// Either way it is cut to leave room for the effects line.
 func (b *Bot) captionText(fx media.Recipe, caption string) string {
-	if caption == "" || len(fx) == 0 {
-		return caption
+	if len(fx) > 0 && caption != "" {
+		b.rndMu.Lock()
+		caption = media.ApplyText(b.rnd, fx, caption)
+		b.rndMu.Unlock()
 	}
-	b.rndMu.Lock()
-	caption = media.ApplyText(b.rnd, fx, caption)
-	b.rndMu.Unlock()
-	if runes := []rune(caption); len(runes) > maxCaption {
-		caption = string(runes[:maxCaption])
-	}
-	return caption
+	return media.Clip(caption, maxCaption)
 }
 
 // recaption answers a pick of caption effects only: the media is sent

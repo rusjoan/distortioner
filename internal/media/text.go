@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 )
 
 // TextEffect is a way to mangle text. Text effects are pure Go and instant.
@@ -67,8 +68,18 @@ func ApplyText(rnd *rand.Rand, recipe Recipe, s string) string {
 			s = e.apply(rnd, s)
 		}
 	}
-	if r := []rune(s); len(r) > maxMessage {
-		s = string(r[:maxMessage])
+	return Clip(s, maxMessage)
+}
+
+// Clip cuts s to at most n UTF-16 code units, the way Telegram counts
+// message length: most emoji take two.
+func Clip(s string, n int) string {
+	units := 0
+	for i, r := range s {
+		units += utf16.RuneLen(r)
+		if units > n {
+			return s[:i]
+		}
 	}
 	return s
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/go-telegram/bot/models"
 
@@ -343,5 +344,17 @@ func TestE2ECaptionFollowsMode(t *testing.T) {
 	parts := strings.Split(strings.TrimPrefix(tag, "🎲 "), " + ")
 	if !strings.HasPrefix(tag, "🎲 ") || !textEmoji[parts[len(parts)-1]] {
 		t.Fatalf("random caption %q", c)
+	}
+}
+
+func TestE2ELongCaptionFits(t *testing.T) {
+	h := newHarness(t)
+	h.api.addFile("photo", render(t, "p.jpg", "-f", "lavfi", "-i", "testsrc=size=320x240", "-frames:v", "1"))
+	long := strings.Repeat("котик спит ", 93) // 1023 characters
+	h.command(user(1, "en"), private(1), "/fry", &models.Message{ID: 980, Chat: private(1), Caption: long,
+		Photo: []models.PhotoSize{{FileID: "photo"}}})
+	// Telegram counts UTF-16 units, and the /fry emoji take two each.
+	if n := len(utf16.Encode([]rune(h.api.waitFor("sendPhoto", nil).params["caption"]))); n > 1024 {
+		t.Fatalf("caption of %d UTF-16 units", n)
 	}
 }
