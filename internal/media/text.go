@@ -92,29 +92,45 @@ func RandomText(rnd *rand.Rand) Recipe {
 // FriedText is what /fry does to text: shouting with emoji.
 var FriedText = Recipe{{ID: "caps"}, {ID: "emoji"}}
 
-// babyTalk lisps like a toddler: р→л, ш/щ→с, ж→з; r/l→w in English.
+// babyTalk lisps like a toddler: р→л, ш/щ→с, ж→з, ч→ть; r/l→w in English.
 func babyTalk(s string) string {
-	return strings.Map(func(r rune) rune {
+	rs := []rune(s)
+	var b strings.Builder
+	for i, r := range rs {
 		switch r {
 		case 'р':
-			return 'л'
+			r = 'л'
 		case 'Р':
-			return 'Л'
+			r = 'Л'
 		case 'ш', 'щ':
-			return 'с'
+			r = 'с'
 		case 'Ш', 'Щ':
-			return 'С'
+			r = 'С'
 		case 'ж':
-			return 'з'
+			r = 'з'
 		case 'Ж':
-			return 'З'
+			r = 'З'
+		case 'ч':
+			b.WriteString("ть")
+			continue
+		case 'Ч':
+			// "ЧАЙ" → "ТЬАЙ" and "МЯЧ" → "МЯТЬ", but "Чай" → "Тьай".
+			next := i+1 < len(rs) && unicode.IsUpper(rs[i+1])
+			end := i+1 == len(rs) || !unicode.IsLetter(rs[i+1])
+			if next || end && i > 0 && unicode.IsUpper(rs[i-1]) {
+				b.WriteString("ТЬ")
+			} else {
+				b.WriteString("Ть")
+			}
+			continue
 		case 'r', 'l':
-			return 'w'
+			r = 'w'
 		case 'R', 'L':
-			return 'W'
+			r = 'W'
 		}
-		return r
-	}, s)
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // spaced puts a space between letters: "п р и в е т".

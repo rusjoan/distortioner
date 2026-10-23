@@ -26,6 +26,9 @@ func TestTextEffects(t *testing.T) {
 	if got := babyTalk("really"); got != "weawwy" {
 		t.Errorf("english baby: %q", got)
 	}
+	if got := babyTalk("Чай? ЧАЙ, мальчик. МЯЧ, ВРАЧ! Ч Ч."); got != "Тьай? ТЬАЙ, мальтьик. МЯТЬ, ВЛАТЬ! Ть Ть." {
+		t.Errorf("baby ч: %q", got)
+	}
 }
 
 func TestDrunkAndEmojiAreRandomButBounded(t *testing.T) {
