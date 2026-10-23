@@ -2,7 +2,7 @@ module github.com/graynk/distortioner
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/go-telegram/bot v1.27.0
