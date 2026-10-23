@@ -347,7 +347,7 @@ func (b *Bot) sendResult(ctx context.Context, t *task, it item, out string) erro
 	}
 	caption = resultCaption(r, t.applied(), caption)
 	reply := telegram.ReplyTo(r.replyTo)
-	markup := choiceMarkup(r.lang, true)
+	markup := resultMarkup(r, false)
 
 	send := func(kind Kind) error {
 		_, err := telegram.SendFile(ctx, out, func(ctx context.Context, f *models.InputFileUpload) (*models.Message, error) {
@@ -648,7 +648,7 @@ func (b *Bot) recaption(ctx context.Context, parts []request) {
 		it, _, _ := classify(r.source)
 		kind := it.kind
 		caption := resultCaption(r, r.caption, b.captionText(r.caption, it.caption))
-		if err := b.TG.Copy(ctx, r.chatID, r.source.Chat.ID, r.source.ID, r.replyTo, caption, choiceMarkup(r.lang, true)); err != nil {
+		if err := b.TG.Copy(ctx, r.chatID, r.source.Chat.ID, r.source.ID, r.replyTo, caption, resultMarkup(r, false)); err != nil {
 			b.handleSendError(ctx, r, err)
 			b.record(r, kind, store.StatusFailed, 0, nil)
 			continue

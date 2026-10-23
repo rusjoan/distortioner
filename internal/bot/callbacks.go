@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -24,6 +26,11 @@ import (
 //	a:…                    admin panel
 func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
 	data := cq.Data
+	if msg := cq.Message.Message; msg != nil && oneShot(data) &&
+		!b.taps.first(fmt.Sprintf("%d:%d:%d:%s", msg.Chat.ID, msg.ID, cq.From.ID, data), time.Now()) {
+		b.TG.Answer(ctx, cq.ID, "", false) // a double tap or a retried update
+		return
+	}
 	b.Metrics.Button(buttonAction(data))
 	switch {
 	case strings.HasPrefix(data, "a:"):
@@ -45,6 +52,44 @@ func (b *Bot) onCallback(ctx context.Context, cq *models.CallbackQuery) {
 	default:
 		b.TG.Answer(ctx, cq.ID, "", false)
 	}
+}
+
+// tapTTL is how long a repeated tap counts as the same one: a double tap
+// or a retried update rather than a wish to run it again.
+const tapTTL = 10 * time.Second
+
+// oneShot reports whether a button starts something, so a repeated tap
+// must not start it twice. Toggles (picker effects, settings) are left
+// alone: tapping one again is how a slip is undone.
+func oneShot(data string) bool {
+	return strings.HasPrefix(data, "x:") || strings.HasPrefix(data, "c:") || strings.HasPrefix(data, "r:") ||
+		data == "f" || data == "p:!" || data == "p:x"
+}
+
+// taps remembers recent taps by their idempotency key.
+type taps struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}
+
+func newTaps() *taps { return &taps{m: map[string]time.Time{}} }
+
+// first reports whether key was not seen within tapTTL, and remembers it.
+// Keys are one-off and never looked up after they expire, so each call
+// drops the expired ones; within a few seconds there are only a handful.
+func (t *taps) first(key string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, at := range t.m {
+		if now.Sub(at) >= tapTTL {
+			delete(t.m, k)
+		}
+	}
+	if _, seen := t.m[key]; seen {
+		return false
+	}
+	t.m[key] = now
+	return true
 }
 
 func (b *Bot) onCancel(ctx context.Context, cq *models.CallbackQuery) {
@@ -82,7 +127,8 @@ func (b *Bot) onCancel(ctx context.Context, cq *models.CallbackQuery) {
 func (b *Bot) onMore(ctx context.Context, cq *models.CallbackQuery) {
 	b.TG.Answer(ctx, cq.ID, "", false)
 	msg := cq.Message.Message
-	if msg == nil || b.Settings.IsBanned(msg.Chat.ID) {
+	// In groups results have no buttons any more; old ones there are dead.
+	if msg == nil || msg.Chat.Type != models.ChatTypePrivate || b.Settings.IsBanned(msg.Chat.ID) {
 		return
 	}
 	r := b.newRequest(ctx, msg, &cq.From, msg.ID)

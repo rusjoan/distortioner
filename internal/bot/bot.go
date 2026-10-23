@@ -64,6 +64,7 @@ type Bot struct {
 
 	albums  *albumCollector
 	pending *pendingStore
+	taps    *taps
 
 	rndMu sync.Mutex
 	rnd   *rand.Rand
@@ -85,7 +86,7 @@ type tracked struct {
 // New creates the bot.
 func New(d Deps) *Bot {
 	b := &Bot{Deps: d, noRights: map[int64]time.Time{}, tracked: map[uint64]*tracked{},
-		pending: newPendingStore(), rnd: newRand()}
+		pending: newPendingStore(), taps: newTaps(), rnd: newRand()}
 	b.albums = newAlbumCollector(albumWait, b.ask)
 	return b
 }
@@ -320,7 +321,7 @@ func (b *Bot) distortText(ctx context.Context, r request) {
 	b.rndMu.Lock()
 	text := media.ApplyText(b.rnd, recipe, r.source.Text)
 	b.rndMu.Unlock()
-	if _, err := b.TG.SendText(ctx, r.chatID, r.replyTo, html.EscapeString(text), textChoiceMarkup(r.lang, true)); err != nil {
+	if _, err := b.TG.SendText(ctx, r.chatID, r.replyTo, html.EscapeString(text), resultMarkup(r, true)); err != nil {
 		b.handleSendError(ctx, r, err)
 		b.record(r, KindText, store.StatusFailed, 0, nil)
 		return

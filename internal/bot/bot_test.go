@@ -63,6 +63,16 @@ func TestGroupDistortReplyToText(t *testing.T) {
 	if c.params["text"] != "aBc" {
 		t.Fatalf("%q", c.params["text"])
 	}
+	// A keyboard is shared by the whole chat: results in groups get none.
+	if m := c.params["reply_markup"]; m != "" && m != "null" {
+		t.Fatalf("buttons on a group result: %s", m)
+	}
+	// Buttons left on older results there do nothing.
+	h.press(*user(1, "en"), &models.Message{ID: c.resultID, Chat: group(-5), Text: c.params["text"]}, "x:r")
+	h.api.waitFor("answerCallbackQuery", nil)
+	if n := len(h.api.find("sendMessage")); n != 1 {
+		t.Fatalf("%d messages", n)
+	}
 }
 
 func TestDistortWithoutReplyExplains(t *testing.T) {
@@ -555,9 +565,19 @@ func TestFxCommandShowsMenuInGroup(t *testing.T) {
 		!strings.Contains(c.params["reply_markup"], `"x:p"`) {
 		t.Fatalf("%+v", c.params)
 	}
-	// The picker works on the question in the group as in a private chat.
+	// Only who called /fx may use the menu.
 	h.press(*user(3, "en"), &models.Message{ID: c.resultID, Chat: group(-5)}, "x:p")
+	h.api.waitFor("answerCallbackQuery", func(c call) bool { return strings.Contains(c.params["text"], "Only the person") })
+	if n := len(h.api.find("editMessageText")); n != 0 {
+		t.Fatalf("a stranger opened the picker")
+	}
+	// For them the picker works on the question as in a private chat.
+	h.press(*user(1, "en"), &models.Message{ID: c.resultID, Chat: group(-5)}, "x:p")
 	h.api.waitFor("editMessageText", func(c call) bool { return strings.Contains(c.params["reply_markup"], `"p:bulge"`) })
+	h.press(*user(3, "en"), &models.Message{ID: c.resultID, Chat: group(-5)}, "p:bulge")
+	h.api.waitFor("answerCallbackQuery", func(c call) bool {
+		return strings.Count(c.params["text"], "Only the person") == 1 && len(h.api.find("answerCallbackQuery")) == 3
+	})
 
 	h.command(user(1, "en"), group(-5), "/fx", nil)
 	h.api.waitFor("sendMessage", func(c call) bool { return strings.Contains(c.params["text"], "Reply with /fx") })
@@ -584,18 +604,47 @@ func TestStageTexts(t *testing.T) {
 // still take the text of the result, never the command.
 func TestButtonsOnTextResultUseItsText(t *testing.T) {
 	h := newHarness(t)
-	original := &models.Message{ID: 7, From: user(2, "en"), Chat: group(-5), Text: "abc"}
-	cmd := &models.Message{ID: 8, From: user(1, "en"), Chat: group(-5), Text: "/fry", ReplyToMessage: original}
+	original := &models.Message{ID: 7, From: user(2, "en"), Chat: private(1), Text: "abc"}
+	cmd := &models.Message{ID: 8, From: user(1, "en"), Chat: private(1), Text: "/fry", ReplyToMessage: original}
 	h.send(cmd)
 	first := h.api.waitFor("sendMessage", nil)
 	if !strings.Contains(first.params["reply_parameters"], `"message_id":8`) {
 		t.Fatalf("expected a reply to the command: %+v", first.params)
 	}
-	result := &models.Message{ID: first.resultID, Chat: group(-5), Text: first.params["text"],
-		ReplyToMessage: &models.Message{ID: 8, Chat: group(-5), Text: "/fry"}}
+	result := &models.Message{ID: first.resultID, Chat: private(1), Text: first.params["text"],
+		ReplyToMessage: &models.Message{ID: 8, Chat: private(1), Text: "/fry"}}
 	h.press(*user(1, "en"), result, "x:r")
 	second := h.api.waitFor("sendMessage", func(c call) bool { return c.resultID != first.resultID })
 	if got := strings.ToLower(second.params["text"]); strings.Contains(strings.ReplaceAll(got, " ", ""), "/fry") || !strings.Contains(strings.ReplaceAll(got, " ", ""), "abc") {
 		t.Fatalf("distorted the wrong text: %q", second.params["text"])
+	}
+}
+
+// A double tap starts the work once.
+func TestDoubleTapRunsOnce(t *testing.T) {
+	h := newHarness(t)
+	h.send(&models.Message{ID: 7, From: user(1, "en"), Chat: private(1), Text: "hello"})
+	first := h.api.waitFor("sendMessage", nil)
+	result := &models.Message{ID: first.resultID, Chat: private(1), Text: first.params["text"]}
+	h.press(*user(1, "en"), result, "x:r")
+	h.press(*user(1, "en"), result, "x:r")
+	h.api.waitFor("answerCallbackQuery", func(call) bool { return len(h.api.find("answerCallbackQuery")) == 2 })
+	if n := len(h.api.find("sendMessage")); n != 2 {
+		t.Fatalf("%d messages, want the text and one result", n)
+	}
+	// A toggle is not one-shot: tapping it again undoes a slip.
+	if oneShot("p:bulge") || !oneShot("p:!") || !oneShot("x:p") {
+		t.Fatal("oneShot")
+	}
+}
+
+func TestTapsExpire(t *testing.T) {
+	tp, now := newTaps(), time.Now()
+	if !tp.first("k", now) || tp.first("k", now.Add(time.Second)) || !tp.first("k", now.Add(tapTTL)) {
+		t.Fatal("first")
+	}
+	tp.first("other", now.Add(10*tapTTL))
+	if len(tp.m) != 1 {
+		t.Fatalf("expired keys kept: %v", tp.m)
 	}
 }

@@ -111,28 +111,37 @@ func (r request) statSource() string {
 // Callback data of the choice buttons: "x:r" random, "x:w" wobble,
 // "x:f" fry, "x:p" open the picker. Picker buttons: "p:<effect>",
 // "p:!" apply, "p:x" close, "p:-" a row title.
-func choiceMarkup(lang i18n.Lang, again bool) *models.InlineKeyboardMarkup {
-	random := i18n.T(lang, "btn.random")
-	if again {
-		random = i18n.T(lang, "btn.random_again")
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: random, CallbackData: "x:r"}, {Text: i18n.T(lang, "btn.wobble"), CallbackData: "x:w"}},
-		{{Text: i18n.T(lang, "btn.fry"), CallbackData: "x:f"}, {Text: i18n.T(lang, "btn.pick"), CallbackData: "x:p"}},
-	}}
+//
+// The buttons show icons only; a tap shows the name (choiceNames).
+func choiceMarkup() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: "🎲", CallbackData: "x:r"}, {Text: "🌀", CallbackData: "x:w"},
+		{Text: "🔥", CallbackData: "x:f"}, {Text: "⚙️", CallbackData: "x:p"},
+	}}}
 }
 
 // textChoiceMarkup is the choice for text: wobble and fry make no sense
 // as such, so only a new random pick or picking effects.
-func textChoiceMarkup(lang i18n.Lang, again bool) *models.InlineKeyboardMarkup {
-	random := i18n.T(lang, "btn.random")
-	if again {
-		random = i18n.T(lang, "btn.random_again")
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: random, CallbackData: "x:r"}, {Text: i18n.T(lang, "btn.pick"), CallbackData: "x:p"}},
-	}}
+func textChoiceMarkup() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: "🎲", CallbackData: "x:r"}, {Text: "⚙️", CallbackData: "x:p"},
+	}}}
 }
+
+// resultMarkup is the keyboard of a result. Groups get none: a keyboard is
+// shared by the whole chat, and there the menu (/fx) is only for whoever asked.
+func resultMarkup(r request, text bool) models.ReplyMarkup {
+	switch {
+	case r.isGroup:
+		return nil
+	case text:
+		return textChoiceMarkup()
+	}
+	return choiceMarkup()
+}
+
+// choiceNames are the toasts of the choice buttons.
+var choiceNames = map[string]string{"r": "btn.random", "w": "btn.wobble", "f": "btn.fry", "p": "btn.pick"}
 
 // pending is a question or an open picker waiting for a tap.
 type pending struct {
@@ -140,17 +149,18 @@ type pending struct {
 	question bool      // the message is our "what to do?" question
 	selected []string  // picker selection
 	kind     media.MediaKind
-	text     bool // the target is text: text effects instead of media ones
-	caption  bool // media with a caption: text effects rewrite it
+	text     bool  // the target is text: text effects instead of media ones
+	caption  bool  // media with a caption: text effects rewrite it
+	owner    int64 // who asked; in groups only they (or a bot admin) may tap
 	expires  time.Time
 }
 
 // choices is the keyboard of a question or a result for this target.
-func (p *pending) choices(lang i18n.Lang, again bool) *models.InlineKeyboardMarkup {
+func (p *pending) choices() *models.InlineKeyboardMarkup {
 	if p.text {
-		return textChoiceMarkup(lang, again)
+		return textChoiceMarkup()
 	}
-	return choiceMarkup(lang, again)
+	return choiceMarkup()
 }
 
 type pendingStore struct {
@@ -202,13 +212,13 @@ func (b *Bot) ask(ctx context.Context, parts []request) {
 	if b.Settings.IsBanned(r.chatID) {
 		return
 	}
-	p := &pending{parts: parts, question: true, kind: media.MediaVideo}
+	p := &pending{parts: parts, question: true, kind: media.MediaVideo, owner: r.userID}
 	if it, ok, _ := classify(r.source); ok {
 		p.kind, p.text = it.kind.mediaKind(), it.kind == KindText
 	}
 	p.kind = albumKind(parts, p.kind)
 	p.caption = !p.text && hasCaption(parts)
-	m, err := b.TG.SendText(ctx, r.chatID, r.source.ID, i18n.T(r.lang, "ask.what"), p.choices(r.lang, false))
+	m, err := b.TG.SendText(ctx, r.chatID, r.source.ID, i18n.T(r.lang, "ask.what"), p.choices())
 	if err != nil {
 		b.handleSendError(ctx, r, err)
 		return
@@ -247,7 +257,10 @@ func (b *Bot) target(ctx context.Context, cq *models.CallbackQuery) (*pending, b
 	if p := b.pending.get(msg.Chat.ID, msg.ID); p != nil {
 		return p, true
 	}
-	if it, ok, _ := classify(msg); ok && it.kind != KindText {
+	// In groups results carry no buttons, and old ones there are not ours to
+	// honour: only questions, which have an owner, are.
+	group := msg.Chat.Type != models.ChatTypePrivate
+	if it, ok, _ := classify(msg); ok && it.kind != KindText && !group {
 		// A media result: the buttons apply to the message itself, replying to it.
 		r := b.newRequest(ctx, msg, &cq.From, msg.ID)
 		return &pending{parts: []request{r}, kind: it.kind.mediaKind(), caption: it.caption != ""}, true
@@ -255,11 +268,16 @@ func (b *Bot) target(ctx context.Context, cq *models.CallbackQuery) (*pending, b
 	if orig := msg.ReplyToMessage; orig != nil {
 		if it, ok, _ := classify(orig); ok && it.kind != KindText {
 			// Our question after a restart: the media is what it replies to.
+			// Who called /fx is gone with the restart; the author of the media is the best guess.
 			r := b.newRequest(ctx, orig, &cq.From, orig.ID)
-			return &pending{parts: []request{r}, question: true, kind: it.kind.mediaKind(), caption: it.caption != ""}, true
+			p := &pending{parts: []request{r}, question: true, kind: it.kind.mediaKind(), caption: it.caption != ""}
+			if orig.From != nil {
+				p.owner = orig.From.ID
+			}
+			return p, true
 		}
 	}
-	if msg.Text != "" && !isOurQuestion(msg.Text) {
+	if msg.Text != "" && !isOurQuestion(msg.Text) && !group {
 		// A text result: like media results, the buttons apply to the text of
 		// this very message. What it replies to may be the command, not the text.
 		r := b.newRequest(ctx, msg, &cq.From, msg.ID)
@@ -288,15 +306,30 @@ func (b *Bot) onChoice(ctx context.Context, cq *models.CallbackQuery) {
 		b.TG.Answer(ctx, cq.ID, i18n.T(lang, "err.expired"), true)
 		return
 	}
-	choice := strings.TrimPrefix(cq.Data, "x:")
-	if choice == "p" {
-		b.TG.Answer(ctx, cq.ID, "", false)
-		b.openPicker(ctx, msg, p, b.newRequest(ctx, msg, &cq.From, 0).lang)
+	if !b.mayUse(msg, p, &cq.From) {
+		b.TG.Answer(ctx, cq.ID, i18n.T(lang, "err.not_your_menu"), true)
 		return
 	}
-	b.TG.Answer(ctx, cq.ID, "", false)
+	choice := strings.TrimPrefix(cq.Data, "x:")
+	name, ok := choiceNames[choice]
+	if !ok {
+		b.TG.Answer(ctx, cq.ID, "", false)
+		return
+	}
+	lang = b.newRequest(ctx, msg, &cq.From, 0).lang
+	b.TG.Answer(ctx, cq.ID, i18n.T(lang, name), false)
+	if choice == "p" {
+		b.openPicker(ctx, msg, p, lang)
+		return
+	}
 	mode := map[string]Mode{"r": ModeRandom, "w": ModeWobble, "f": ModeFry}[choice]
 	b.start(ctx, msg, p, mode, nil, &cq.From)
+}
+
+// mayUse reports whether a user may tap the buttons of a question or a
+// picker: anyone in a private chat, in a group only who asked.
+func (b *Bot) mayUse(msg *models.Message, p *pending, from *models.User) bool {
+	return msg.Chat.Type == models.ChatTypePrivate || p.owner == 0 || p.owner == from.ID || b.Cfg.IsAdmin(from.ID)
 }
 
 // start runs the choice on the pending media.
@@ -480,6 +513,10 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 		b.TG.Answer(ctx, cq.ID, i18n.T(lang, "err.expired"), true)
 		return
 	}
+	if !b.mayUse(msg, p, &cq.From) {
+		b.TG.Answer(ctx, cq.ID, i18n.T(lang, "err.not_your_menu"), true)
+		return
+	}
 	lang = b.newRequest(ctx, msg, &cq.From, 0).lang
 	switch arg := strings.TrimPrefix(cq.Data, "p:"); arg {
 	case "-":
@@ -488,11 +525,11 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 		b.TG.Answer(ctx, cq.ID, "", false)
 		if p.question {
 			p.selected = nil
-			_ = b.TG.EditText(ctx, msg.Chat.ID, msg.ID, i18n.T(lang, "ask.what"), p.choices(lang, false))
+			_ = b.TG.EditText(ctx, msg.Chat.ID, msg.ID, i18n.T(lang, "ask.what"), p.choices())
 			return
 		}
 		b.pending.drop(msg.Chat.ID, msg.ID)
-		b.TG.EditMarkup(ctx, msg.Chat.ID, msg.ID, p.choices(lang, true))
+		b.TG.EditMarkup(ctx, msg.Chat.ID, msg.ID, p.choices())
 	case "!":
 		if len(p.selected) == 0 {
 			b.TG.Answer(ctx, cq.ID, i18n.T(lang, "picker.empty"), true)
@@ -505,7 +542,7 @@ func (b *Bot) onPicker(ctx context.Context, cq *models.CallbackQuery) {
 		}
 		if !p.question {
 			b.pending.drop(msg.Chat.ID, msg.ID)
-			b.TG.EditMarkup(ctx, msg.Chat.ID, msg.ID, p.choices(lang, true))
+			b.TG.EditMarkup(ctx, msg.Chat.ID, msg.ID, p.choices())
 		}
 		b.start(ctx, msg, p, ModeRecipe, recipe, &cq.From)
 	default:

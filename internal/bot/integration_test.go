@@ -190,7 +190,8 @@ func TestE2EFryReplyToVideo(t *testing.T) {
 	original := &models.Message{ID: 70, Chat: group(-5), Video: &models.Video{FileID: "vid"}}
 	h.send(&models.Message{From: user(1, "en"), Chat: group(-5), Text: "/fry@distortioner_bot", ReplyToMessage: original})
 	c := h.api.waitFor("sendVideo", nil)
-	if len(c.files["video"]) == 0 || !strings.Contains(c.params["reply_markup"], `"x:f"`) {
+	// No buttons on a group result: a keyboard is shared by the whole chat.
+	if len(c.files["video"]) == 0 || strings.Contains(c.params["reply_markup"], `"x:`) {
 		t.Fatalf("%+v", c.params)
 	}
 	// A status while it works, removed when the result is sent.
